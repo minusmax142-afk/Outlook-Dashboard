@@ -1,0 +1,5 @@
+Flask>=3.0,<4
+IMAPClient>=3.0,<4
+keyring>=25,<26
+# Only needed for the classic-Outlook backend ("backend": "outlook" in settings.json)
+pywin32>=306; sys_platform == "win32"

@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Outlook Dashboard</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
+  <script>
+    // Apply the saved/system theme before first paint to avoid a flash.
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem("theme"); } catch (e) {}
+      var dark = t ? t === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.classList.toggle("dark", dark);
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            brand: { 50: "#eef4ff", 100: "#dbe7fe", 400: "#6d9cf7", 500: "#3b82f6", 600: "#1d4ed8", 700: "#1e40af" },
+          },
+          fontFamily: { sans: ["Inter", "Segoe UI", "system-ui", "-apple-system", "Roboto", "sans-serif"] },
+        },
+      },
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='theme.css') }}">
+</head>
+<body class="h-full antialiased" data-backend="{{ backend }}">
+
+<!-- ===================== Sign-in (mail server) ===================== -->
+<div id="signin" class="fixed inset-0 z-[70] hidden items-center justify-center overflow-y-auto bg-slate-50 px-4 py-8 dark:bg-slate-950">
+  <form id="signin-form" class="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900" novalidate>
+    <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-brand-50 text-brand-600 dark:bg-slate-800 dark:text-brand-400">
+      <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+    </div>
+    <h1 class="text-center text-xl font-semibold">Outlook Dashboard</h1>
+    <p class="mt-2 text-center text-sm text-slate-500">Sign in with your work email and its password, the same ones Outlook uses. Works with New Outlook and classic Outlook.</p>
+
+    <div id="signin-error" class="mt-4 hidden rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200" role="alert"></div>
+
+    <div class="mt-5 space-y-3">
+      <label class="block space-y-1 text-sm">
+        <span class="font-medium">Email address</span>
+        <input id="si-email" type="email" autocomplete="username" required class="input h-10 w-full" placeholder="name@indigoheights.com">
+      </label>
+      <label class="block space-y-1 text-sm">
+        <span class="font-medium">Password</span>
+        <input id="si-password" type="password" autocomplete="current-password" required class="input h-10 w-full">
+      </label>
+      <label class="block space-y-1 text-sm">
+        <span class="font-medium">Your name <span class="font-normal text-slate-400">(shown to people you email)</span></span>
+        <input id="si-name" type="text" autocomplete="name" class="input h-10 w-full" maxlength="100">
+      </label>
+      <details id="si-advanced" class="rounded-md border border-slate-200 px-3 py-2 text-sm dark:border-slate-800">
+        <summary class="cursor-pointer select-none text-slate-500">Server settings</summary>
+        <div class="mt-3 grid grid-cols-[1fr_5rem] gap-2">
+          <label class="space-y-1 text-xs text-slate-500">Incoming (IMAP) server<input id="si-imap-host" class="input h-9 w-full text-sm" autocomplete="off"></label>
+          <label class="space-y-1 text-xs text-slate-500">Port<input id="si-imap-port" type="number" class="input h-9 w-full text-sm" value="993"></label>
+          <label class="space-y-1 text-xs text-slate-500">Outgoing (SMTP) server<input id="si-smtp-host" class="input h-9 w-full text-sm" autocomplete="off"></label>
+          <label class="space-y-1 text-xs text-slate-500">Port<input id="si-smtp-port" type="number" class="input h-9 w-full text-sm" value="465"></label>
+        </div>
+        <p class="mt-2 text-xs text-slate-400">Filled in from your email domain. Encrypted connections only (SSL/TLS).</p>
+      </details>
+    </div>
+
+    <button id="signin-btn" type="submit" class="btn-primary mt-6 w-full">
+      <span id="signin-btn-label">Sign in</span>
+    </button>
+    <p class="mt-4 text-center text-xs text-slate-400">Your password is saved encrypted in Windows Credential Manager on this PC. You stay signed in until you sign out.</p>
+  </form>
+</div>
+<div class="flex h-full flex-col">
+
+  <!-- ===================== Top bar ===================== -->
+  <header class="app-header flex h-16 shrink-0 items-center gap-3 px-3 md:px-5">
+    <button id="menu-btn" class="icon-btn md:hidden" aria-label="Open folders">
+      <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+
+    <div class="hidden items-center gap-2.5 md:flex md:w-[13.5rem]">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" class="h-[18px] w-[18px]" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+      </span>
+      <span class="min-w-0">
+        <span class="brand-name block truncate text-[0.95rem]">Outlook Dashboard</span>
+        <span class="brand-sub block truncate">Mail &amp; task workspace</span>
+      </span>
+    </div>
+
+    <form id="search-form" role="search" class="header-search relative flex-1 md:max-w-xl">
+      <svg viewBox="0 0 24 24" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="search-input" type="search" placeholder="Search by sender or subject" aria-label="Search by sender or subject"
+             class="input w-full pl-9 pr-9" autocomplete="off">
+      <button id="search-clear" type="button" class="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" aria-label="Clear search">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </form>
+
+    <div class="ml-auto flex items-center gap-2">
+      <button id="write-btn" class="btn-outline" title="Write for me (W): turn a short note into a professional email" aria-label="Write for me">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+        <span class="hidden sm:inline">Write for me</span>
+      </button>
+      <button id="new-mail-btn" class="btn-primary" title="New mail (N)" aria-label="New mail">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        <span class="hidden sm:inline">New mail</span>
+      </button>
+      <button id="theme-btn" class="icon-btn" aria-label="Toggle dark mode" title="Toggle dark mode">
+        <svg viewBox="0 0 24 24" class="h-5 w-5 dark:hidden" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+        <svg viewBox="0 0 24 24" class="hidden h-5 w-5 dark:block" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Outlook connection problem banner -->
+  <div id="conn-banner" class="hidden border-b border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-200" role="alert">
+    <div class="mx-auto flex max-w-5xl items-start gap-3">
+      <svg viewBox="0 0 24 24" class="mt-0.5 h-5 w-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></svg>
+      <p id="conn-message" class="flex-1"></p>
+      <button id="conn-retry" class="btn-outline h-8 shrink-0">Retry</button>
+    </div>
+  </div>
+
+  <div class="relative flex min-h-0 flex-1">
+    <!-- ===================== Folder sidebar ===================== -->
+    <div id="sidebar-backdrop" class="fixed inset-0 z-40 hidden bg-black/40 md:hidden"></div>
+    <aside id="sidebar"
+           class="app-sidebar fixed inset-y-0 left-0 z-50 flex w-64 -translate-x-full flex-col transition-transform md:static md:z-auto md:w-60 md:translate-x-0">
+      <nav class="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-3 pb-3" aria-label="Mail folders">
+        <p class="nav-section">Workspace</p>
+        <a href="#" data-view="overview" class="folder-link">
+          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+          <span class="flex-1">Overview</span>
+        </a>
+        <a href="#" data-view="summary" class="folder-link">
+          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>
+          <span class="flex-1">Summary</span>
+          <span id="summary-badge" class="text-xs font-semibold text-brand-600 dark:text-brand-400" title="Emails with tasks waiting for you to decide"></span>
+        </a>
+        <a href="#" data-view="tasks" class="folder-link">
+          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          <span class="flex-1">Tasks</span>
+          <span id="tasks-badge" class="text-xs font-semibold text-brand-600 dark:text-brand-400"></span>
+        </a>
+        <div class="flex items-center gap-1 pr-1">
+          <p class="nav-section flex-1">Folders</p>
+          <button id="folder-new-btn" class="icon-btn mt-2 h-7 w-7" title="New folder" aria-label="New folder">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
+        <ul id="folder-list" class="space-y-0.5"></ul>
+        <p class="px-3 pt-3 text-[11px] leading-snug text-slate-400">Tip: drag emails onto a folder to move them.</p>
+      </nav>
+      <div class="sidebar-footer space-y-2 p-4 text-xs">
+        <div class="account-chip">
+          <span class="account-avatar" aria-hidden="true">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+          </span>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-1.5">
+              <span id="conn-dot" class="h-2 w-2 shrink-0 rounded-full bg-slate-300"></span>
+              <span id="conn-label" class="truncate text-slate-500">Connecting…</span>
+            </div>
+            <button id="signout-btn" class="mt-0.5 hidden text-slate-500 hover:underline">Sign out</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div id="mail-view" class="flex min-w-0 flex-1">
+    <!-- ===================== Message list ===================== -->
+    <section id="list-pane" class="flex w-full min-w-0 flex-col border-r border-slate-200 dark:border-slate-800 md:w-[380px] md:shrink-0 lg:w-[440px]" aria-label="Messages">
+      <div class="space-y-2.5 border-b border-slate-200 px-4 py-3.5 dark:border-slate-800">
+        <div class="flex items-center gap-2">
+          <h1 id="list-title" class="min-w-0 flex-1 truncate text-lg font-semibold">Inbox</h1>
+          <span id="list-count" class="text-xs text-slate-500"></span>
+          <button id="refresh-btn" class="icon-btn" aria-label="Refresh" title="Refresh (auto-refreshes every 60 seconds)">
+            <svg id="refresh-icon" viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 12A9 9 0 0 1 18.5 5.8L21 8"/><path d="M21 3v5h-5M3 21v-5h5"/></svg>
+          </button>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-1" role="toolbar" aria-label="Filters">
+          <button class="chip" data-filter="unread" aria-pressed="false">Unread</button>
+          <button class="chip" data-filter="flagged" aria-pressed="false">Flagged</button>
+          <button class="chip" data-filter="attachments" aria-pressed="false">Attachments</button>
+          <div class="relative">
+            <button id="date-btn" class="chip" aria-expanded="false" aria-controls="date-panel">Date</button>
+            <div id="date-panel" class="absolute left-0 top-full z-30 mt-1 hidden w-60 space-y-3 rounded-lg border border-slate-200 bg-white p-3 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+              <p class="text-sm font-medium">Received between</p>
+              <label class="block space-y-1 text-xs text-slate-500">From<input id="date-from" type="date" class="input h-8 w-full"></label>
+              <label class="block space-y-1 text-xs text-slate-500">To<input id="date-to" type="date" class="input h-8 w-full"></label>
+              <div class="flex gap-2">
+                <button id="date-clear" class="btn-outline h-8 flex-1">Clear</button>
+                <button id="date-apply" class="btn-primary h-8 flex-1">Apply</button>
+              </div>
+            </div>
+          </div>
+          <select id="cat-filter" class="chip cursor-pointer bg-transparent pr-1" aria-label="Show only one category" title="Show only emails with this category">
+            <option value="">Category</option>
+          </select>
+          <button id="filters-clear" class="hidden rounded px-2 py-1 text-xs text-slate-500 hover:text-slate-800 dark:hover:text-slate-200">Clear all</button>
+        </div>
+
+        <div id="organize-row" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+          <label class="flex items-center gap-1">Sort
+            <select id="sort-select" class="input h-7 cursor-pointer px-1.5 text-xs" aria-label="Sort emails">
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="sender">Sender (A–Z)</option>
+              <option value="subject">Subject (A–Z)</option>
+              <option value="size">Largest first</option>
+            </select>
+          </label>
+          <label class="flex items-center gap-1">Group
+            <select id="group-select" class="input h-7 cursor-pointer px-1.5 text-xs" aria-label="Group emails">
+              <option value="none">None</option>
+              <option value="sender">By sender</option>
+              <option value="conversation">By conversation</option>
+              <option value="date">By date</option>
+            </select>
+          </label>
+          <button id="groups-toggle" class="hidden rounded px-1 py-0.5 hover:text-slate-800 dark:hover:text-slate-200">Collapse all</button>
+        </div>
+
+        <!-- Shown while emails are ticked -->
+        <div id="bulk-bar" class="hidden flex-wrap items-center gap-1 rounded-md bg-brand-50 px-2 py-1 dark:bg-slate-900" role="toolbar" aria-label="Selected emails">
+          <input id="bulk-all" type="checkbox" class="mr-1 h-4 w-4 cursor-pointer accent-[#0f6cbd]" aria-label="Select all loaded emails" title="Select all loaded emails">
+          <span id="bulk-count" class="mr-auto text-xs font-semibold"></span>
+          <button class="tool-btn !px-2" data-bulk="read" title="Mark selected as read">Read</button>
+          <button class="tool-btn !px-2" data-bulk="unread" title="Mark selected as unread">Unread</button>
+          <button class="tool-btn !px-2" data-bulk="flag" title="Flag selected">Flag</button>
+          <button class="tool-btn !px-2" data-bulk="unflag" title="Clear flag on selected">Unflag</button>
+          <button id="bulk-categorize" class="tool-btn !px-2" title="Add or remove a category" aria-haspopup="menu">Categorize</button>
+          <button id="bulk-move" class="tool-btn !px-2" title="Move selected emails to a folder">Move…</button>
+          <button class="tool-btn !px-2 hover:!text-red-600" data-bulk="delete" title="Delete selected">Delete</button>
+          <button id="bulk-clear" class="tool-btn !px-2" title="Clear selection" aria-label="Clear selection">✕</button>
+        </div>
+      </div>
+
+      <div id="list-scroll" class="min-h-0 flex-1 overflow-y-auto">
+        <div id="list-error" class="m-4 hidden rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200" role="alert"></div>
+        <ul id="message-list"></ul>
+        <div id="list-empty" class="hidden flex-col items-center gap-2 px-6 py-16 text-center text-slate-500">
+          <svg viewBox="0 0 24 24" class="h-10 w-10 opacity-40" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1Z"/></svg>
+          <p id="list-empty-title" class="text-sm font-medium text-slate-800 dark:text-slate-200"></p>
+          <p id="list-empty-body" class="text-xs"></p>
+        </div>
+        <div id="load-more-wrap" class="hidden justify-center p-4">
+          <button id="load-more" class="btn-outline h-8">Load more</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== Reading pane ===================== -->
+    <section id="reading-pane" class="hidden min-w-0 flex-1 flex-col md:flex" aria-label="Reading pane">
+
+      <!-- Nothing selected -->
+      <div id="reading-empty" class="flex flex-1 items-center justify-center p-8 text-center">
+        <div class="space-y-2 text-slate-500">
+          <svg viewBox="0 0 24 24" class="mx-auto h-10 w-10 opacity-40" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+          <p class="text-sm">Select an email to read it.</p>
+        </div>
+      </div>
+
+      <!-- Loading skeleton -->
+      <div id="reading-loading" class="hidden flex-1 space-y-4 p-6" aria-busy="true" aria-label="Loading email">
+        <div class="skeleton h-6 w-2/3"></div>
+        <div class="flex items-center gap-3">
+          <div class="skeleton h-10 w-10 rounded-full"></div>
+          <div class="flex-1 space-y-2"><div class="skeleton h-4 w-1/3"></div><div class="skeleton h-3 w-1/2"></div></div>
+        </div>
+        <div class="space-y-2 pt-4">
+          <div class="skeleton h-3 w-full"></div><div class="skeleton h-3 w-full"></div>
+          <div class="skeleton h-3 w-5/6"></div><div class="skeleton h-3 w-4/6"></div>
+        </div>
+      </div>
+
+      <!-- Error -->
+      <div id="reading-error" class="hidden flex-1 p-6">
+        <div class="md:hidden"><button class="back-btn btn-outline mb-4 h-8">← Back</button></div>
+        <div class="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200" role="alert">
+          <p id="reading-error-text"></p>
+        </div>
+      </div>
+
+      <!-- Email -->
+      <article id="reading-content" class="hidden min-h-0 flex-1 flex-col">
+        <div class="flex items-center gap-1 border-b border-slate-200 px-2 py-1.5 dark:border-slate-800 md:px-4">
+          <button class="back-btn icon-btn md:hidden" aria-label="Back to list">
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+          </button>
+          <button id="act-edit-draft" class="tool-btn hidden !text-brand-600 dark:!text-brand-400" title="Open this draft to edit or send it">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+            <span>Edit draft</span>
+          </button>
+          <button id="act-reply" class="tool-btn" title="Reply">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 17 4 12l5-5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+            <span class="hidden lg:inline">Reply</span>
+          </button>
+          <button id="act-replyall" class="tool-btn" title="Reply all">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 17-5-5 5-5"/><path d="m12 17-5-5 5-5"/><path d="M22 18v-2a4 4 0 0 0-4-4H7"/></svg>
+            <span class="hidden lg:inline">Reply all</span>
+          </button>
+          <button id="act-forward" class="tool-btn" title="Forward">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 17 5-5-5-5"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>
+            <span class="hidden lg:inline">Forward</span>
+          </button>
+          <span class="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-800"></span>
+          <button id="act-task" class="tool-btn" title="Create a task from this email">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            <span class="hidden lg:inline">Add task</span>
+          </button>
+          <button id="act-read" class="tool-btn" title="Mark as unread">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+            <span id="act-read-label">Mark unread</span>
+          </button>
+          <button id="act-flag" class="tool-btn" title="Flag">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/></svg>
+            <span id="act-flag-label">Flag</span>
+          </button>
+          <button id="act-categorize" class="tool-btn" title="Categorize" aria-haspopup="menu">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L2 12V2h10l8.6 8.6a2 2 0 0 1 0 2.8Z"/><circle cx="7" cy="7" r="1.5"/></svg>
+            <span class="hidden lg:inline">Categorize</span>
+          </button>
+          <button id="act-move" class="tool-btn" title="Move to a folder">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="m12 10 3 3-3 3M8 13h7"/></svg>
+            <span class="hidden lg:inline">Move</span>
+          </button>
+          <button id="act-delete" class="tool-btn hover:!text-red-600" title="Move to Deleted Items">
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+            <span>Delete</span>
+          </button>
+        </div>
+
+        <div class="flex min-h-0 flex-1 flex-col">
+          <header class="shrink-0 space-y-3 px-4 pb-3 pt-4 md:px-6">
+            <h2 id="r-subject" class="break-words text-xl font-semibold leading-snug"></h2>
+            <div class="flex items-start gap-3">
+              <div id="r-avatar" class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-600 text-sm font-semibold text-white dark:bg-brand-400 dark:text-slate-900"></div>
+              <div class="min-w-0 flex-1 text-sm">
+                <div class="flex flex-wrap items-baseline gap-x-2">
+                  <span id="r-from-name" class="font-semibold"></span>
+                  <span id="r-from-address" class="truncate text-slate-500"></span>
+                </div>
+                <p id="r-to" class="truncate text-slate-500"></p>
+                <p id="r-cc" class="hidden truncate text-slate-500"></p>
+              </div>
+              <time id="r-date" class="shrink-0 text-xs text-slate-500"></time>
+            </div>
+            <div id="r-categories" class="hidden flex-wrap gap-1"></div>
+            <div id="r-flagged" class="hidden items-center gap-1.5 rounded-md bg-red-50 px-2 py-1 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-300">
+              <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="currentColor"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/></svg>
+              Flagged for follow up
+            </div>
+          </header>
+
+          <form id="r-task" class="mx-4 mb-3 hidden shrink-0 space-y-2 rounded-lg border border-brand-500/40 bg-brand-50/60 p-3 dark:bg-slate-900 md:mx-6" aria-label="Create task">
+            <p class="text-xs font-semibold text-brand-700 dark:text-brand-400">New task from this email</p>
+            <div id="r-task-suggestions" class="flex flex-wrap gap-1"></div>
+            <div class="flex flex-wrap gap-2">
+              <input id="r-task-title" class="input h-9 min-w-0 flex-1 bg-white dark:bg-slate-950" maxlength="255" placeholder="Task title" aria-label="Task title" required>
+              <input id="r-task-due" type="date" class="input h-9 bg-white dark:bg-slate-950" aria-label="Due date">
+              <button class="btn-primary h-9">Add task</button>
+              <button type="button" id="r-task-cancel" class="btn-outline h-9">Cancel</button>
+            </div>
+          </form>
+
+          <div id="r-attachments" class="hidden max-h-28 shrink-0 flex-wrap gap-2 overflow-y-auto px-4 pb-3 md:px-6" aria-label="Attachments"></div>
+
+          <div id="r-remote" class="mx-4 mb-3 hidden shrink-0 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300 md:mx-6">
+            <span class="flex-1">Pictures from the internet were blocked to protect your privacy.</span>
+            <button id="r-remote-show" class="font-semibold text-brand-600 hover:underline dark:text-brand-400">Show pictures</button>
+          </div>
+
+          <div class="min-h-[240px] flex-1 border-t border-slate-200 dark:border-slate-800">
+            <!-- No allow-scripts / allow-same-origin / allow-forms: the email can't run code or touch this page. -->
+            <iframe id="r-frame" title="Email body" class="hidden h-full w-full border-0 bg-white"
+                    sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>
+            <div id="r-text" class="hidden h-full overflow-y-auto whitespace-pre-wrap break-words px-4 py-4 text-sm leading-relaxed md:px-6"></div>
+          </div>
+        </div>
+      </article>
+    </section>
+    </div><!-- /mail-view -->
+
+    <!-- ===================== Overview ===================== -->
+    <div id="overview-view" class="hidden min-w-0 flex-1 overflow-y-auto">
+      <div class="mx-auto max-w-6xl space-y-6 p-4 md:p-6">
+        <div class="page-head">
+          <div class="flex-1">
+            <h1 class="page-title">Overview</h1>
+            <p class="page-sub">Your mailbox and tasks at a glance.</p>
+          </div>
+          <span id="ov-updated" class="text-xs text-slate-500"></span>
+          <button id="ov-refresh" class="icon-btn" aria-label="Refresh overview" title="Refresh">
+            <svg id="ov-refresh-icon" viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 12A9 9 0 0 1 18.5 5.8L21 8"/><path d="M21 3v5h-5M3 21v-5h5"/></svg>
+          </button>
+        </div>
+        <div id="ov-error" class="hidden rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200" role="alert"></div>
+
+        <!-- Stat cards: each opens the matching list -->
+        <div id="ov-cards" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <button class="stat-card" data-go="unread"><span class="stat-icon ic-blue" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></span><span class="stat-label">Unread in Inbox</span><span class="stat-value" id="ov-unread">–</span><span class="stat-sub" id="ov-unread-sub"></span></button>
+          <button class="stat-card" data-go="inbox"><span class="stat-icon ic-indigo" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1Z"/></svg></span><span class="stat-label">Received today</span><span class="stat-value" id="ov-today">–</span><span class="stat-sub" id="ov-today-sub"></span></button>
+          <button class="stat-card" data-go="sent"><span class="stat-icon ic-teal" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></span><span class="stat-label">Sent this week</span><span class="stat-value" id="ov-sent">–</span><span class="stat-sub">last 7 days</span></button>
+          <button class="stat-card" data-go="flagged"><span class="stat-icon ic-rose" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/></svg></span><span class="stat-label">Flagged</span><span class="stat-value" id="ov-flagged">–</span><span class="stat-sub">in Inbox</span></button>
+          <button class="stat-card" data-go="tasks"><span class="stat-icon ic-amber" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span><span class="stat-label">Open tasks</span><span class="stat-value" id="ov-tasks">–</span><span class="stat-sub" id="ov-tasks-sub"></span></button>
+          <button class="stat-card" data-go="drafts"><span class="stat-icon ic-slate" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></span><span class="stat-label">Drafts</span><span class="stat-value" id="ov-drafts">–</span><span class="stat-sub">not sent yet</span></button>
+        </div>
+
+        <div class="grid gap-6 lg:grid-cols-3">
+          <!-- 7-day chart -->
+          <section class="panel lg:col-span-2" aria-labelledby="ov-chart-title">
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <h2 id="ov-chart-title" class="flex-1 font-semibold">Emails in the last 7 days</h2>
+              <div class="flex items-center gap-3 text-xs text-slate-600 dark:text-slate-300" aria-hidden="true">
+                <span class="flex items-center gap-1.5"><span class="legend-swatch series-received"></span>Received</span>
+                <span class="flex items-center gap-1.5"><span class="legend-swatch series-sent"></span>Sent</span>
+              </div>
+            </div>
+            <p id="ov-chart-summary" class="mt-1 text-xs text-slate-500"></p>
+            <div class="relative mt-3 h-64">
+              <canvas id="ov-chart" role="img" aria-label="Bar chart of emails received and sent per day for the last 7 days"></canvas>
+              <p id="ov-chart-fallback" class="absolute inset-0 hidden items-center justify-center text-center text-sm text-slate-500">The chart couldn't load (no internet?). The numbers are in the table below.</p>
+            </div>
+            <details class="mt-3 text-sm">
+              <summary class="cursor-pointer select-none text-xs text-slate-500 hover:text-slate-800 dark:hover:text-slate-200">Show as table</summary>
+              <table class="mt-2 w-full text-left text-xs">
+                <thead class="text-slate-500"><tr><th class="py-1 font-medium">Day</th><th class="py-1 text-right font-medium">Received</th><th class="py-1 text-right font-medium">Sent</th></tr></thead>
+                <tbody id="ov-table" class="divide-y divide-slate-200 dark:divide-slate-800"></tbody>
+              </table>
+            </details>
+          </section>
+
+          <!-- Upcoming tasks -->
+          <section class="panel" aria-labelledby="ov-tasks-title">
+            <div class="flex items-center gap-2">
+              <h2 id="ov-tasks-title" class="flex-1 font-semibold">Upcoming tasks</h2>
+              <button class="text-xs font-medium text-brand-600 hover:underline dark:text-brand-400" data-go="tasks">All tasks</button>
+            </div>
+            <ul id="ov-task-list" class="mt-3 divide-y divide-slate-200 dark:divide-slate-800"></ul>
+          </section>
+        </div>
+
+        <!-- Recent unread -->
+        <section class="panel" aria-labelledby="ov-unread-title">
+          <div class="flex items-center gap-2">
+            <h2 id="ov-unread-title" class="flex-1 font-semibold">Recent unread</h2>
+            <button class="text-xs font-medium text-brand-600 hover:underline dark:text-brand-400" data-go="unread">Show all unread</button>
+          </div>
+          <ul id="ov-unread-list" class="mt-2 divide-y divide-slate-200 dark:divide-slate-800"></ul>
+        </section>
+      </div>
+    </div>
+
+    <!-- ===================== Summary ===================== -->
+    <div id="summary-view" class="hidden min-w-0 flex-1 overflow-y-auto">
+      <div class="mx-auto max-w-6xl space-y-5 p-4 md:p-6">
+        <div class="page-head">
+          <div class="flex-1">
+            <h1 class="page-title">Mail summary</h1>
+            <p class="page-sub">Every email in one line, and the requests that need your decision.</p>
+          </div>
+          <select id="sum-days" class="input h-8 cursor-pointer text-xs" aria-label="Period">
+            <option value="1">Today</option>
+            <option value="3">Last 3 days</option>
+            <option value="7" selected>Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+          <button id="sum-refresh" class="icon-btn" aria-label="Refresh summary" title="Refresh">
+            <svg id="sum-refresh-icon" viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 12A9 9 0 0 1 18.5 5.8L21 8"/><path d="M21 3v5h-5M3 21v-5h5"/></svg>
+          </button>
+        </div>
+
+        <div class="flex gap-1 border-b border-slate-200 dark:border-slate-800" role="tablist" aria-label="Summary type" style="border-color: var(--border)">
+          <button class="sum-tab" role="tab" id="tab-all" aria-selected="true" aria-controls="sum-all">All mail <span id="tab-all-count" class="tab-count"></span></button>
+          <button class="sum-tab" role="tab" id="tab-task" aria-selected="false" aria-controls="sum-task">Task mail <span id="tab-task-count" class="tab-count"></span></button>
+        </div>
+
+        <div id="sum-error" class="hidden rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200" role="alert"></div>
+        <p id="sum-note" class="hidden text-xs text-slate-500"></p>
+
+        <!-- ---------- All mail ---------- -->
+        <section id="sum-all" role="tabpanel" aria-labelledby="tab-all" class="space-y-5">
+          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <div class="stat-card"><span class="stat-label">Received</span><span class="stat-value" id="sa-received">–</span><span class="stat-sub" id="sa-received-sub"></span></div>
+            <div class="stat-card"><span class="stat-label">Unread</span><span class="stat-value" id="sa-unread">–</span><span class="stat-sub">still to read</span></div>
+            <div class="stat-card"><span class="stat-label">Replied</span><span class="stat-value" id="sa-answered">–</span><span class="stat-sub">you answered</span></div>
+            <div class="stat-card"><span class="stat-label">Need a reply</span><span class="stat-value" id="sa-needs">–</span><span class="stat-sub">requests not answered</span></div>
+            <div class="stat-card"><span class="stat-label">With attachments</span><span class="stat-value" id="sa-attach">–</span><span class="stat-sub">&nbsp;</span></div>
+            <div class="stat-card"><span class="stat-label">Senders</span><span class="stat-value" id="sa-senders">–</span><span class="stat-sub">different people</span></div>
+          </div>
+
+          <div class="grid gap-5 lg:grid-cols-2">
+            <section class="panel" aria-labelledby="sa-senders-title">
+              <h2 id="sa-senders-title" class="font-semibold">Top senders</h2>
+              <ul id="sa-top-senders" class="mt-3 space-y-2"></ul>
+            </section>
+            <section class="panel" aria-labelledby="sa-kinds-title">
+              <h2 id="sa-kinds-title" class="font-semibold">By type</h2>
+              <ul id="sa-kinds" class="mt-3 space-y-2"></ul>
+              <p class="mt-3 text-[11px] text-slate-400">Types are guessed from the subject and text: Request = asks you to do something.</p>
+            </section>
+          </div>
+
+          <section class="panel" aria-labelledby="sa-digest-title">
+            <div class="flex flex-wrap items-center gap-2">
+              <h2 id="sa-digest-title" class="flex-1 font-semibold">Every email in one line</h2>
+              <div class="flex flex-wrap gap-1" role="group" aria-label="Show">
+                <button class="chip" data-digest="all" aria-pressed="true">All</button>
+                <button class="chip" data-digest="unread" aria-pressed="false">Unread</button>
+                <button class="chip" data-digest="needs" aria-pressed="false">Need a reply</button>
+                <button class="chip" data-digest="request" aria-pressed="false">Requests</button>
+              </div>
+            </div>
+            <div id="sa-digest" class="mt-2"></div>
+          </section>
+        </section>
+
+        <!-- ---------- Task mail ---------- -->
+        <section id="sum-task" role="tabpanel" aria-labelledby="tab-task" class="hidden space-y-5">
+          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            <div class="stat-card"><span class="stat-label">Emails with tasks</span><span class="stat-value" id="st-emails">–</span><span class="stat-sub" id="st-emails-sub"></span></div>
+            <div class="stat-card"><span class="stat-label">Waiting for you</span><span class="stat-value" id="st-new">–</span><span class="stat-sub">add or dismiss</span></div>
+            <div class="stat-card"><span class="stat-label">Added as tasks</span><span class="stat-value" id="st-added">–</span><span class="stat-sub" id="st-added-sub"></span></div>
+            <div class="stat-card"><span class="stat-label">Due this week</span><span class="stat-value" id="st-week">–</span><span class="stat-sub">open deadlines</span></div>
+            <div class="stat-card"><span class="stat-label">Overdue</span><span class="stat-value" id="st-overdue">–</span><span class="stat-sub" id="st-overdue-sub">open deadlines</span></div>
+          </div>
+          <div class="flex flex-wrap gap-1" role="group" aria-label="Show">
+            <button class="chip" data-tstatus="open" aria-pressed="true">Waiting &amp; in progress</button>
+            <button class="chip" data-tstatus="new" aria-pressed="false">Waiting for you</button>
+            <button class="chip" data-tstatus="added" aria-pressed="false">Added</button>
+            <button class="chip" data-tstatus="all" aria-pressed="false">All, incl. done &amp; dismissed</button>
+          </div>
+          <ul id="st-list" class="space-y-3"></ul>
+        </section>
+      </div>
+    </div>
+
+    <!-- ===================== Tasks ===================== -->
+    <div id="tasks-view" class="hidden min-w-0 flex-1 overflow-y-auto">
+      <div class="mx-auto max-w-6xl space-y-6 p-4 md:p-6">
+        <div class="page-head">
+          <div class="flex-1">
+            <h1 class="page-title">Tasks</h1>
+            <p class="page-sub">Requests found in your email, and your own task list (saved on this PC).</p>
+          </div>
+        </div>
+
+        <div class="grid gap-6 lg:grid-cols-2">
+          <!-- Suggestions -->
+          <section aria-labelledby="sugg-title" class="space-y-3">
+            <div class="flex items-center gap-2">
+              <h2 id="sugg-title" class="flex-1 font-semibold">Found in your emails <span id="sugg-count" class="text-sm font-normal text-slate-500"></span></h2>
+              <select id="sugg-days" class="input h-8 text-xs" aria-label="How far back to scan">
+                <option value="3">Last 3 days</option>
+                <option value="7" selected>Last 7 days</option>
+                <option value="14">Last 14 days</option>
+                <option value="30">Last 30 days</option>
+              </select>
+              <button id="sugg-refresh" class="btn-outline h-8" title="Scan emails again">Scan</button>
+            </div>
+            <p class="text-xs text-slate-500">Requests and deadlines spotted in recent mail. Edit the title or due date, then add it, or dismiss it.</p>
+            <div id="sugg-error" class="hidden rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200" role="alert"></div>
+            <ul id="sugg-list" class="space-y-3"></ul>
+          </section>
+
+          <!-- My tasks -->
+          <section aria-labelledby="mytasks-title" class="space-y-3">
+            <div class="flex items-center gap-2">
+              <h2 id="mytasks-title" class="flex-1 font-semibold">My tasks <span id="tasks-count" class="text-sm font-normal text-slate-500"></span></h2>
+              <label class="flex items-center gap-1.5 text-xs text-slate-500"><input id="tasks-show-done" type="checkbox"> Show completed</label>
+            </div>
+            <form id="task-new" class="flex flex-wrap gap-2 rounded-lg border border-slate-200 p-2 dark:border-slate-800">
+              <input id="task-new-title" class="input h-9 min-w-0 flex-1" placeholder="Add a task…" maxlength="255" aria-label="New task title">
+              <input id="task-new-due" type="date" class="input h-9" aria-label="Due date">
+              <button class="btn-primary h-9">Add</button>
+            </form>
+            <div id="tasks-error" class="hidden rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200" role="alert"></div>
+            <ul id="tasks-list" class="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800"></ul>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Compose window ===================== -->
+<div id="compose" class="fixed inset-0 z-[55] hidden items-stretch justify-center bg-black/40 md:items-center md:p-6" role="dialog" aria-modal="true" aria-labelledby="compose-title">
+  <form id="compose-form" class="flex h-full w-full flex-col bg-white shadow-2xl dark:bg-slate-900 md:h-[min(760px,100%)] md:max-w-3xl md:rounded-xl" novalidate>
+    <div class="flex items-center gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+      <h2 id="compose-title" class="flex-1 truncate font-semibold">New message</h2>
+      <span id="compose-status" class="text-xs text-slate-500"></span>
+      <button type="button" id="compose-close" class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div class="min-h-0 flex-1 overflow-y-auto">
+      <div class="divide-y divide-slate-200 border-b border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+        <label class="compose-row">
+          <span class="compose-label">To</span>
+          <input id="c-to" name="to" class="compose-input" autocomplete="off" placeholder="name@company.com; another@company.com">
+          <button type="button" id="c-show-ccbcc" class="shrink-0 text-xs font-medium text-brand-600 hover:underline dark:text-brand-400">Cc / Bcc</button>
+        </label>
+        <label id="c-cc-row" class="compose-row hidden">
+          <span class="compose-label">Cc</span>
+          <input id="c-cc" name="cc" class="compose-input" autocomplete="off">
+        </label>
+        <label id="c-bcc-row" class="compose-row hidden">
+          <span class="compose-label">Bcc</span>
+          <input id="c-bcc" name="bcc" class="compose-input" autocomplete="off">
+        </label>
+        <label class="compose-row">
+          <span class="compose-label">Subject</span>
+          <input id="c-subject" name="subject" class="compose-input" maxlength="255" autocomplete="off">
+        </label>
+      </div>
+
+      <textarea id="c-body" name="body" class="block min-h-[220px] w-full resize-y bg-transparent px-4 py-3 text-sm leading-relaxed outline-none" placeholder="Write your message…" aria-label="Message"></textarea>
+
+      <div id="c-attachments" class="hidden flex-wrap gap-2 px-4 pb-3" aria-label="Attachments"></div>
+
+      <div id="c-quoted-wrap" class="hidden border-t border-slate-200 dark:border-slate-800">
+        <button type="button" id="c-quoted-toggle" class="flex w-full items-center gap-2 px-4 py-2 text-left text-xs font-medium text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+          <svg id="c-quoted-chevron" viewBox="0 0 24 24" class="h-4 w-4 transition-transform" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+          <span id="c-quoted-label">Show original message</span>
+        </button>
+        <iframe id="c-quoted" title="Original message" class="hidden h-80 w-full border-0 bg-white"
+                sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>
+      </div>
+    </div>
+
+    <div id="c-error" class="hidden border-t border-red-200 bg-red-50 px-4 py-2 text-sm text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200" role="alert"></div>
+
+    <div id="c-confirm" class="hidden items-center gap-2 border-t border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
+      <span id="c-confirm-text" class="flex-1"></span>
+      <button type="button" id="c-confirm-no" class="btn-outline h-8">Keep editing</button>
+      <button type="button" id="c-confirm-yes" class="h-8 rounded-md bg-red-600 px-3 text-sm font-medium text-white hover:bg-red-700">Discard</button>
+    </div>
+
+    <div class="flex items-center gap-2 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
+      <button type="submit" id="c-send" class="btn-primary" title="Send (Ctrl+Enter)">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+        Send
+      </button>
+      <button type="button" id="c-draft" class="btn-outline">Save draft</button>
+      <button type="button" id="c-polish" class="btn-outline" title="Rewrite what you typed as a formal, professional email">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+        <span id="c-polish-label">Make professional</span>
+      </button>
+      <label class="tool-btn cursor-pointer" title="Attach files">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>
+        <span>Attach</span>
+        <input id="c-files" type="file" multiple class="sr-only">
+      </label>
+      <span class="flex-1"></span>
+      <button type="button" id="c-discard" class="tool-btn hover:!text-red-600" title="Discard">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+        <span class="hidden sm:inline">Discard</span>
+      </button>
+    </div>
+  </form>
+</div>
+
+<!-- Folder menu (rename / new subfolder / delete) -->
+<div id="folder-menu" class="menu hidden" role="menu" aria-label="Folder actions">
+  <button type="button" role="menuitem" data-action="subfolder">New subfolder</button>
+  <button type="button" role="menuitem" data-action="rename">Rename</button>
+  <button type="button" role="menuitem" data-action="delete" class="danger">Delete folder</button>
+</div>
+
+<!-- Category menu (built by app.js) -->
+<div id="cat-menu" class="menu hidden max-h-[70vh] overflow-y-auto" role="menu" aria-label="Categories"></div>
+
+<!-- Manage categories -->
+<div id="cat-manager" class="fixed inset-0 z-[65] hidden items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-labelledby="cat-manager-title">
+  <div class="flex max-h-[90vh] w-full max-w-md flex-col rounded-xl bg-white shadow-2xl dark:bg-slate-900">
+    <div class="flex items-center gap-2 border-b border-slate-200 px-5 py-3 dark:border-slate-800">
+      <h2 id="cat-manager-title" class="flex-1 font-semibold">Categories</h2>
+      <button type="button" id="cat-manager-close" class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="px-5 pt-3 text-xs text-slate-500">Rename or recolour a category and every email that has it updates. Categories are saved on your mail server with each email.</p>
+    <ul id="cat-manager-list" class="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-3"></ul>
+    <form id="cat-new-form" class="flex items-center gap-2 border-t border-slate-200 px-5 py-3 dark:border-slate-800">
+      <input id="cat-new-name" class="input h-9 min-w-0 flex-1" maxlength="40" placeholder="New category name" aria-label="New category name">
+      <button class="btn-primary h-9">Add</button>
+    </form>
+    <p id="cat-manager-error" class="hidden px-5 pb-3 text-sm text-red-600 dark:text-red-400" role="alert"></p>
+  </div>
+</div>
+
+<!-- Small dialog: new folder / rename / delete / move -->
+<div id="dialog" class="fixed inset-0 z-[65] hidden items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+  <form id="dialog-form" class="w-full max-w-sm space-y-4 rounded-xl bg-white p-5 shadow-2xl dark:bg-slate-900" novalidate>
+    <h2 id="dialog-title" class="font-semibold"></h2>
+    <p id="dialog-text" class="hidden text-sm text-slate-600 dark:text-slate-300"></p>
+    <input id="dialog-input" class="input hidden h-9 w-full" maxlength="100" autocomplete="off" aria-labelledby="dialog-title">
+    <div id="dialog-folders" class="hidden max-h-72 overflow-y-auto rounded-md border border-slate-200 py-1 dark:border-slate-800" role="listbox" aria-label="Folders"></div>
+    <p id="dialog-error" class="hidden text-sm text-red-600 dark:text-red-400" role="alert"></p>
+    <div class="flex justify-end gap-2">
+      <button type="button" id="dialog-cancel" class="btn-outline">Cancel</button>
+      <button id="dialog-ok" class="btn-primary">OK</button>
+    </div>
+  </form>
+</div>
+
+<!-- ===================== Write for me ===================== -->
+<div id="writer" class="fixed inset-0 z-[56] hidden items-start justify-center overflow-y-auto bg-black/40 p-4 md:pt-16" role="dialog" aria-modal="true" aria-labelledby="writer-title">
+  <form id="writer-form" class="w-full max-w-xl space-y-3 rounded-xl bg-white p-5 shadow-2xl dark:bg-slate-900" novalidate>
+    <div class="flex items-center gap-2">
+      <svg viewBox="0 0 24 24" class="h-5 w-5 text-brand-600 dark:text-brand-400" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+      <h2 id="writer-title" class="flex-1 font-semibold">Write for me</h2>
+      <button type="button" id="writer-close" class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="text-sm text-slate-600 dark:text-slate-300">Write what you want to say in a few words, and who it goes to (<b>send to …</b>, <b>cc …</b>). You'll see the finished email before anything is sent.</p>
+    <textarea id="writer-note" rows="3" maxlength="2000" class="input block w-full p-3 text-sm leading-relaxed" aria-label="Your note"
+              placeholder="Type what the email should say, and who it goes to (send to …)"></textarea>
+    <div class="flex flex-wrap items-center gap-1.5 text-xs" aria-label="Examples">
+      <span class="text-slate-500">Try:</span>
+      <button type="button" class="writer-example" data-note="hold salary of [name], send to [name]">Hold salary</button>
+      <button type="button" class="writer-example" data-note="ask accounts to send the stock report by friday">Ask for a report</button>
+      <button type="button" class="writer-example" data-note="schedule a meeting with the department heads tomorrow at 3 pm about the new SOP, send to [name]">Meeting</button>
+      <button type="button" class="writer-example" data-note="remind [name] to submit the attendance sheet by tomorrow">Reminder</button>
+      <button type="button" class="writer-example" data-note="inform all staff that the office will be closed on monday, send to [name]">Inform</button>
+      <button type="button" class="writer-example" data-note="approve leave of [name] from 5th december, send to hr">Approve</button>
+    </div>
+
+    <div id="writer-people" class="hidden space-y-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+      <p id="writer-people-help" class="text-sm font-medium"></p>
+      <div id="writer-rows" class="space-y-2"></div>
+      <div class="relative">
+        <input id="writer-add" class="input h-9 w-full text-sm" autocomplete="off" placeholder="Add someone: type a name or email address" aria-label="Add a recipient">
+        <div id="writer-suggest" class="menu hidden !absolute left-0 right-0 top-10 max-h-56 overflow-y-auto" role="listbox"></div>
+      </div>
+    </div>
+
+    <div class="rounded-lg border border-slate-200 dark:border-slate-800">
+      <button type="button" id="sig-toggle" class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" aria-expanded="false" aria-controls="sig-fields">
+        <span class="font-medium">Your signature:</span>
+        <span id="sig-summary" class="min-w-0 flex-1 truncate text-slate-500"></span>
+        <span class="text-xs font-medium text-brand-600 dark:text-brand-400">Edit</span>
+      </button>
+      <div id="sig-fields" class="hidden grid-cols-1 gap-2 border-t border-slate-200 p-3 dark:border-slate-800 sm:grid-cols-2">
+        <input id="sig-name" class="input h-9 text-sm" maxlength="80" placeholder="Your name" aria-label="Your name">
+        <input id="sig-title" class="input h-9 text-sm" maxlength="80" placeholder="Job title, e.g. General Manager" aria-label="Job title">
+        <input id="sig-company" class="input h-9 text-sm" maxlength="80" placeholder="Company, e.g. Indigo Heights" aria-label="Company">
+        <input id="sig-phone" class="input h-9 text-sm" maxlength="80" placeholder="Phone (optional)" aria-label="Phone">
+        <div class="flex justify-end gap-2 sm:col-span-2">
+          <button type="button" id="sig-save" class="btn-primary h-8">Save signature</button>
+        </div>
+      </div>
+    </div>
+
+    <p id="writer-error" class="hidden text-sm text-red-600 dark:text-red-400" role="alert"></p>
+    <div class="flex items-center justify-end gap-2">
+      <span id="writer-status" class="mr-auto text-xs text-slate-500" aria-live="polite"></span>
+      <button type="button" id="writer-cancel" class="btn-outline">Cancel</button>
+      <button id="writer-ok" class="btn-primary">Write email</button>
+    </div>
+  </form>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="pointer-events-none fixed inset-x-0 bottom-4 z-[60] flex justify-center px-4" aria-live="polite">
+  <div id="toast-box" class="pointer-events-auto hidden items-center gap-3 rounded-lg px-4 py-2.5 text-sm shadow-lg"></div>
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
