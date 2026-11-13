@@ -95,6 +95,24 @@ def make_subject(note: str) -> str:
     s = _clean(sents[0])
     T = w._title_subject
 
+    # "have the AC of room 204 repaired" -> "Repair of AC of Room 204"
+    m = re.match(r"(?i)^(?:get|have)\s+(?:the\s+)?(.+?)\s+(repaired|fixed|resolved|cleaned|checked|replaced|installed|serviced)\b(.*)$", s)
+    if m:
+        noun = {"repaired": "Repair of", "fixed": "Repair of", "resolved": "Resolution of", "cleaned": "Cleaning of",
+                "checked": "Inspection of", "replaced": "Replacement of", "installed": "Installation of",
+                "serviced": "Servicing of"}[m.group(2).lower()]
+        return _with_when(f"{noun} {T(_cap(_strip_when(m.group(1)), 7))}", full)
+
+    # "I have not yet received the report" -> "Report Not Yet Received"
+    m = re.match(r"(?i)^(?:I|we)\s+(?:have|has)\s+not\s+(?:yet\s+)?received\s+(?:the\s+|your\s+|any\s+)?(.+?)(?:\s+yet)?$", s)
+    if m:
+        return f"{T(_cap(_strip_when(m.group(1)), 6))} Not Yet Received"
+
+    # "Please find the attached invoice" -> "Invoice"
+    m = re.match(r"(?i)^find\s+(?:the\s+|herewith\s+)?(?:attached|enclosed)\s+(?:the\s+)?(.+)$", s)
+    if m:
+        return _with_when(T(_cap(m.group(1), 7)), full)
+
     # Leave / absence / late arrival (about me)
     m = re.search(r"(?i)\b(?:I am|I will be|I'll be|I shall be)\s+on\s+leave\b(.*)", s)
     if m or re.search(r"(?i)\bI (?:would like to|want to|need to) (?:take|apply for|request) (?:a )?leave\b", s):
@@ -169,6 +187,7 @@ def make_subject(note: str) -> str:
         obj = _strip_when(m.group(2))
         obj = re.sub(r"(?i)^(?:me|us)\s+", "", obj)
         obj = re.sub(r"(?i)^(?:it|this|that|them)\b\s*", "", obj).strip()
+        obj = re.sub(r"(?i)^(?:the|a|an|our|my|your)\s+", "", obj)
         if obj:
             return _with_when(f"{NOUNS[m.group(1).lower()]} {T(_cap(obj, 7))}", full)
 

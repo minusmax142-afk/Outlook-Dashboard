@@ -73,7 +73,8 @@ PROPER["may"] = "may"  # too ambiguous ("you may ...") — months written as "Ma
 ACRONYMS = {"hr": "HR", "it": "it", "ceo": "CEO", "cfo": "CFO", "coo": "COO", "gm": "GM", "agm": "AGM",
             "md": "MD", "sop": "SOP", "sops": "SOPs", "po": "PO", "pkr": "PKR", "rs": "Rs.", "f&b": "F&B",
             "fnb": "F&B", "ac": "AC", "cctv": "CCTV", "pos": "POS", "kpi": "KPI", "kpis": "KPIs", "pdf": "PDF",
-            "id": "ID", "vat": "VAT", "gst": "GST", "ntn": "NTN", "eobi": "EOBI", "pessi": "PESSI"}
+            "id": "ID", "vat": "VAT", "gst": "GST", "ntn": "NTN", "eobi": "EOBI", "pessi": "PESSI", "vip": "VIP",
+            "vips": "VIPs"}
 WORD = re.compile(r"[A-Za-z][A-Za-z.&/']*")
 
 
@@ -301,6 +302,9 @@ def _take_when(text: str) -> tuple[str, str]:
 def _when_text(when: str) -> str:
     w = _lower_first(tidy(when))
     w = re.sub(r"^(?i:eod)$", "the end of the day", w)
+    # Month names inside a date ("20 nov", "nov 20", "may 2025") are capitalised.
+    w = re.sub(rf"(?i)\b({MONTH})\b(?=\.?\s*\d)|(?<=\d )({MONTH})\b|(?<=\d(?:st|nd|rd|th) )({MONTH})\b|(?<=of )({MONTH})\b",
+               lambda m: next(g for g in m.groups() if g).capitalize(), w)
     return w
 
 
@@ -347,7 +351,22 @@ def _split_people(who: str) -> list[str]:
 
 def parse(note: str) -> dict:
     """{to: [phrase], cc: [phrase], verb, link, action}"""
-    text = re.sub(r"\s+", " ", (note or "").strip())
+    # One thought per line: a line break without punctuation ends a sentence ("hi qasim\nsend the report").
+    text = re.sub(r"(?<![.!?,;:])[ \t]*\n+\s*", ". ", (note or "").strip())
+    text = re.sub(r"\s+", " ", text)
+    # "Hi Qasim. ..." -> Qasim is who it is for (when nobody else is named).
+    greet = re.match(r"(?i)^(?:hi|hello|hey|dear|salam|salaam|assalam\w*(?:\s+o\s+alaikum)?|aoa)\s+((?!all\b|team\b|sir\b|madam\b|everyone\b)"
+                     r"[a-z][\w'-]*(?:\s+(?!i\b|we\b|pls\b|please\b|kindly\b)[a-z][\w'-]*)?)\s*[,.!:-]\s*", text)
+    greeted = greet.group(1) if greet else ""
+    if greet:
+        text = text[greet.end():]
+    # "get the stock report from accounts by friday" -> "ask accounts to send the stock report by friday"
+    text = re.sub(r"(?i)^(?:please\s+)?(?:get|collect|obtain|ask for|request)\s+(?:the\s+)?(.+?)\s+from\s+((?:the\s+)?[a-z][\w&-]*(?:\s+(?:team|department|dept))?)"
+                  r"(\s+(?:by|before|until|till|today|tomorrow|on|within)\b.*)?$",
+                  lambda m: f"ask {m.group(2)} to send the {m.group(1)}{m.group(3) or ''}", text)
+    # "give warning to kamran" (no reason given)
+    text = re.sub(r"(?i)^((?:please\s+)?(?:issue|give|send)\s+(?:an?\s+)?(?:written\s+|formal\s+|final\s+)?warning\s+to\s+(?:(?!\b(?:for|regarding|about|on|over)\b)[^.,;])+?)\s*$",
+                  r"\1 for the matter discussed", text)
     addrs: list[str] = []
 
     def hide(m):
@@ -400,6 +419,8 @@ def parse(note: str) -> dict:
     unhide = lambda x: re.sub(r"ADDR(\d+)Z", lambda m: addrs[int(m.group(1))], x)
     to, cc = [unhide(x) for x in to], [unhide(x) for x in cc]
     text = re.sub(r"^(?:please|kindly|pls|plz)\s+", "", text, flags=re.I).strip()
+    if not to and greeted:
+        to = [greeted]
     return {"to": _dedupe(to), "cc": _dedupe(cc), "verb": verb, "link": link, "action": text}
 
 
@@ -415,9 +436,9 @@ def _dedupe(items: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 # Templates
 
-CONFIRM = "Kindly confirm by return email once the necessary action has been taken."
-HOPE = "I hope this email finds you well."
-CLARIFY = "Should you require any clarification, please do not hesitate to contact me."
+# One short, fitting closing line per email: no stacked stock phrases.
+CONFIRM = "Kindly confirm once this has been done."
+QUESTIONS = "Please let me know if you have any questions."
 
 
 def _you(text: str) -> str:
@@ -442,7 +463,10 @@ def _salary(action: str) -> dict | None:
     kind = ("hold" if verb in ("hold", "stop", "withhold", "freeze", "block") else
             "release" if verb in ("release", "resume", "unhold", "un-hold", "clear", "pay", "process", "disburse", "transfer", "issue") else
             "deduct" if verb in ("deduct", "cut") else "increase")
-    rest = action
+    # "Ahmed Driver's October salary" -> "salary of Ahmed Driver for October"
+    rest = action[: m.end()] + re.sub(
+        rf"(?i)\b((?:[A-Za-z][\w-]*\s+){{0,3}}?[A-Za-z][\w-]*)'s\s+(?:({MONTH})\s+)?(salar(?:y|ies)|wages?|dues)\b",
+        lambda x: f"the {x.group(3)} of {x.group(1)}" + (f" for {x.group(2)}" if x.group(2) else ""), action[m.end():])
     reason, rest = _take(REASON, rest, 1)
     amount, rest = _take(AMOUNT, rest)
     if not reason and kind in ("deduct", "hold"):
@@ -479,20 +503,17 @@ def _salary(action: str) -> dict | None:
     if kind == "hold":
         subject = f"Salary Hold – {names_s}"
         when = period or "with immediate effect until further notice"
-        first = f"I am writing to instruct you to place {whose} on hold {when}{reason_s}" + (":" if many else ".")
-        emp = "employees" if many else "employee"
+        first = f"Please place {whose} on hold {when}{reason_s}" + (":" if many else ".")
         paras = [first + listing,
-                 f"Accordingly, no salary payment should be released to the above-mentioned {emp} until further written "
-                 "instructions are received from the undersigned. Please ensure that the payroll records are updated to "
-                 "reflect this instruction.",
-                 CONFIRM + " " + CLARIFY]
+                 "No salary payment should be released until you receive further written instructions from me. "
+                 "Please update the payroll records accordingly.",
+                 CONFIRM]
     elif kind == "release":
         subject = f"Salary Release – {names_s}"
         when = f" {period}" if period else ""
-        paras = [f"I am writing to authorise the release of {whose}{when}{reason_s}" + (":" + listing if many else "."),
-                 "Please arrange for the payment to be processed at the earliest and ensure that the payroll records are "
-                 "updated accordingly.",
-                 "Kindly confirm by return email once the payment has been disbursed. " + CLARIFY]
+        paras = [f"I hereby authorise the release of {whose}{when}{reason_s}" + (":" + listing if many else "."),
+                 "Please have the payment processed at the earliest, update the payroll records, and confirm once it "
+                 "has been disbursed."]
     elif kind == "deduct":
         subject = f"Salary Deduction – {names_s}"
         when = f" {period}" if period else ""
@@ -500,24 +521,21 @@ def _salary(action: str) -> dict | None:
             amt = re.sub(r"(?i)(\d+)\s+days?(?:'s)?\s+",
                          lambda x: f"{x.group(1)} day's " if x.group(1) == "1" else f"{x.group(1)} days' ", tidy(amount))
             target = whose.replace(f"the {sal} of ", "", 1).rstrip(",") if people and not many else whose
-            paras = [f"I am writing to instruct you to deduct {_lower_first(amt)} from {target}{when}{reason_s}." + listing,
-                     "Please ensure that this deduction is reflected in the upcoming payroll and that the employee concerned "
-                     "is duly informed.",
-                     CONFIRM + " " + CLARIFY]
+            paras = [f"Please deduct {_lower_first(amt)} from {target}{when}{reason_s}." + listing,
+                     "Kindly ensure the deduction is reflected in the upcoming payroll and that the employee concerned is "
+                     "informed, and confirm once this has been done."]
         else:
             amt = f" {tidy(amount)}" if amount else " the applicable amount"
-            paras = [f"I am writing to instruct you to deduct{amt} from {whose}{when}{reason_s}." + listing,
-                     "Please ensure that this deduction is reflected in the upcoming payroll and that the employee concerned "
-                     "is duly informed.",
-                     CONFIRM + " " + CLARIFY]
+            paras = [f"Please deduct{amt} from {whose}{when}{reason_s}." + listing,
+                     "Kindly ensure the deduction is reflected in the upcoming payroll and that the employee concerned is "
+                     "informed, and confirm once this has been done."]
     else:
         subject = f"Salary Revision – {names_s}"
         amt = f" by {tidy(amount)}" if amount else ""
         when = f" {_with_when(period).strip()}" if period else ""
-        paras = [f"I am writing to inform you that {whose} is to be revised{amt}{when}{reason_s}." + listing,
-                 "Please update the payroll records accordingly and ensure that the revised amount is reflected in the "
-                 "next salary disbursement.",
-                 CONFIRM + " " + CLARIFY]
+        paras = [f"Please note that {whose} is to be revised{amt}{when}{reason_s}." + listing,
+                 "Kindly update the payroll records so that the revised amount is reflected in the next salary "
+                 "disbursement, and confirm once this has been done."]
     return {"intent": "salary", "subject": subject, "paragraphs": paras}
 
 
@@ -552,12 +570,9 @@ def _meeting(action: str) -> dict | None:
         s += f" in the {tidy(place).lower()}" if not re.match(r"(?i)online|zoom|teams", place) else f" ({tidy(place)})"
     if topic:
         s += f" to discuss {_lower_first(_strip_end(tidy(topic)))}"
-    s += ", and I would request your attendance."
+    s += ", and would appreciate your attendance. Please come prepared with any relevant updates."
     paras = [s,
-             "Your presence and input will be highly valued. I would appreciate it if you could come prepared with any "
-             "relevant updates or information pertaining to the agenda.",
-             "Kindly confirm your availability at your earliest convenience. Should the proposed timing not be suitable, "
-             "please let me know so that an alternative arrangement can be made."]
+             "Kindly confirm your availability, or let me know if another time would suit you better."]
     return {"intent": "meeting", "subject": subject, "paragraphs": paras}
 
 
@@ -573,21 +588,31 @@ def _request_doc(action: str) -> dict | None:
         return None
     verb, obj = m.group(1).lower(), m.group(2)
     reason, obj = _take(REASON, obj, 1)
-    when, obj = _take_when(obj)
+    whens = []
+    while True:
+        w, obj2 = _take_when(obj)
+        if not w:
+            break
+        whens.append(w)
+        obj = obj2
+    # "for oct" stays with the document ("sales figures for October"); deadlines go after it.
+    for w in [x for x in whens if BARE_MONTH.fullmatch(re.sub(r"(?i)^(?:for|of)\s+", "", x))]:
+        whens.remove(w)
+        obj = _strip_end(obj) + " " + _when_text(w)
+    when = " ".join(_when_text(x) for x in whens)
     obj = _strip_end(tidy(obj))
+    obj = re.sub(rf"(?i)\b(for|of) ({MONTH})\b", lambda x: f"{x.group(1)} {x.group(2).capitalize()}", obj)
     if verb in ("email", "mail", "give", "forward"):
         verb = "share"
     objl = _lower_first(obj)
     if not re.match(r"(?i)(the|a|an|my|our|your|all|this|these|those|\d)\b", objl):
         objl = "the " + objl
     subject = "Request: " + _title_subject(re.sub(r"(?i)^(the|a|an|your|our|my)\s+", "", obj))
-    s = f"I would be grateful if you could {verb} {objl}{_with_when(when)}"
+    s = f"Could you please {verb} {objl}{_with_when(when)}"
     if reason:
         s += f", as {_lower_first(_strip_end(tidy(reason)))}"
-    short = re.sub(r"(?i)^(?:the|a|an|your|our|my)\s+", "", objl)
-    paras = [HOPE + " " + s + ".",
-             f"Kindly ensure that the {short} is complete and accurate, and that any relevant supporting details are included.",
-             "Should you have any questions or require any further information from my side, please feel free to contact me."]
+    paras = [s + "? Kindly make sure everything is complete and accurate, with any supporting details included.",
+             "Thank you in advance."]
     return {"intent": "request", "subject": subject, "paragraphs": paras}
 
 
@@ -604,10 +629,9 @@ def _reminder(action: str, verb: str) -> dict | None:
         body = f"This is a gentle reminder regarding {_lower_first(topic)}{_with_when(when)}."
         subject = "Reminder: " + _title_subject(re.sub(r"(?i)^the\s+", "", topic))
     return {"intent": "reminder", "subject": subject,
-            "paragraphs": ["I hope you are doing well. " + body,
-                           "As this matter is time-sensitive, I would appreciate it if you could treat it as a priority.",
-                           "If you have already attended to this, please disregard this reminder. Otherwise, kindly let me "
-                           "know if there is anything preventing its completion."]}
+            "paragraphs": [body + " As this is time-sensitive, I would appreciate your priority attention.",
+                           "If this has already been taken care of, please disregard this note. Otherwise, do let me know "
+                           "if anything is holding it up."]}
 
 
 def _approval(action: str) -> dict | None:
@@ -619,6 +643,8 @@ def _approval(action: str) -> dict | None:
         word, thing = m.group(1).lower(), m.group(2)
     else:
         thing, word = m.group(1) + " " + m.group(3), m.group(2).lower()
+    if re.match(r"(?i)(?:my|me|our|us)\b", thing.strip()):
+        return None  # "approve my leave" asks the reader for approval; it is not a decision
     positive = not re.match(r"(reject|declin|disapprov|not|deny|denied)", word)
     reason, thing = _take(REASON, thing, 1)
     when, thing = _take_when(thing)
@@ -629,14 +655,13 @@ def _approval(action: str) -> dict | None:
     thing_l = _you(thing_l)
     subject = ("Approved: " if positive else "Not Approved: ") + _title_subject(re.sub(r"(?i)^(the|a|an|your|his|her|their)\s+", "", thing))
     if positive:
-        s = f"I am pleased to inform you that {thing_l} has been approved{_with_when(when)}."
-        paras = [s, "Please proceed accordingly and ensure that all relevant records are updated.",
-                 "Should you require any further information, please feel free to contact me."]
+        s = f"I am pleased to confirm that {thing_l} has been approved{_with_when(when)}."
+        paras = [s + " Please proceed accordingly and update the relevant records."]
     else:
         s = f"After careful consideration, I regret to inform you that {thing_l} has not been approved at this time"
         s += f", as {_lower_first(_strip_end(tidy(reason)))}." if reason else "."
-        paras = [s, "This decision may be reviewed should circumstances change in the future.",
-                 "Please feel free to discuss the matter with me should you require any further clarification."]
+        paras = [s, "This may be reconsidered should circumstances change. Please feel free to speak with me if you "
+                    "would like to discuss it further."]
     return {"intent": "approval", "subject": subject, "paragraphs": paras}
 
 
@@ -650,19 +675,21 @@ def _explanation(action: str) -> dict | None:
     when, issue = _take_when(issue)
     issue = _you(_strip_end(tidy(issue)))
     if warning:
+        if re.match(r"(?i)the matter discussed$", issue):
+            issue = ""
         subject = "Warning" + (f": {_title_subject(issue)}" if issue else "")
         paras = [f"This email serves as a formal warning regarding {_lower_first(issue) or 'the matter discussed'}.",
-                 "Such conduct is not in line with the standards and policies of the organisation and cannot be accepted.",
-                 "You are hereby advised to ensure that this does not recur. Please note that any repetition may result in "
-                 "further disciplinary action, in accordance with company policy.",
+                 "Such conduct is not in line with the standards and policies of the organisation. You are advised to "
+                 "ensure that it does not recur; any repetition may result in further disciplinary action in accordance "
+                 "with company policy.",
                  "Kindly acknowledge receipt of this email."]
     else:
         subject = "Explanation Required" + (f": {_title_subject(issue)}" if issue else "")
         why = (f" of {_lower_first(issue)}" if re.match(r"(?i)(why|how|what)\b", issue) else f" regarding {_lower_first(issue)}") if issue else ""
-        paras = [f"You are hereby requested to submit a written explanation{why}{_with_when(when, ' within 24 hours')}.",
-                 "Your explanation should include all relevant facts and circumstances. Please note that your response "
-                 "will be reviewed before any further action is taken.",
-                 "Kindly treat this matter with due seriousness."]
+        paras = [f"You are requested to submit a written explanation{why}{_with_when(when, ' within 24 hours')}, "
+                 "including all relevant facts and circumstances.",
+                 "Your response will be reviewed before any further action is taken, so kindly treat this matter with "
+                 "due seriousness."]
     return {"intent": "explanation", "subject": subject, "paragraphs": paras}
 
 
@@ -674,14 +701,14 @@ def _thanks(action: str, verb: str) -> dict | None:
     thing = _you(_strip_end(tidy(thing)))
     if congr:
         return {"intent": "thanks", "subject": "Congratulations" + (f" on {_title_subject(thing)}" if thing else ""),
-                "paragraphs": [f"Please accept my heartfelt congratulations on {_lower_first(thing) or 'your achievement'}.",
-                               "This achievement is a testament to your dedication and hard work, and it is truly well deserved.",
-                               "I wish you continued success in all your future endeavours."]}
+                "paragraphs": [f"Please accept my warmest congratulations on {_lower_first(thing) or 'your achievement'}. "
+                               "It is a well-deserved recognition of your hard work and dedication.",
+                               "Wishing you every success in the times ahead."]}
     thing_s = _title_subject(re.sub(r"(?i)^(?:the|your)\s+", "", thing)) if thing else ""
     return {"intent": "thanks", "subject": "Thank You" + (f" – {thing_s}" if thing else ""),
-            "paragraphs": [f"I would like to take this opportunity to express my sincere appreciation for {_lower_first(thing) or 'your support'}.",
-                           "Your dedication, professionalism and attention to detail are truly commendable and greatly valued.",
-                           "Thank you once again for your continued hard work."]}
+            "paragraphs": [f"I would like to sincerely thank you for {_lower_first(thing) or 'your support'}. "
+                           "Your dedication and professionalism are truly appreciated and make a real difference.",
+                           "Thank you once again."]}
 
 
 def _follow_up(action: str) -> dict | None:
@@ -692,10 +719,154 @@ def _follow_up(action: str) -> dict | None:
     when, topic = _take_when(topic)
     topic = _strip_end(tidy(topic))
     return {"intent": "follow-up", "subject": "Follow-up: " + _title_subject(re.sub(r"(?i)^the\s+", "", topic)),
-            "paragraphs": [f"{HOPE} I am writing to follow up on {_lower_first(topic)}.",
-                           f"I would be grateful if you could provide an update on the current status{_with_when(when)}, "
-                           "including any issues or challenges that may require attention.",
-                           "Thank you for your prompt attention to this matter."]}
+            "paragraphs": [f"I am writing to follow up on {_lower_first(topic)}. Could you please share an update on the "
+                           f"current status{_with_when(when)}, including anything that needs my attention?",
+                           "Thank you."]}
+
+
+UNWELL = re.compile(r"^(?:i\s+am|i'm|im|am)?\s*(?:sick|ill|unwell|not well|not feeling well|having (?:a )?(?:fever|flu|cold))$", re.I)
+
+
+def _reason_text(reason: str) -> str:
+    r = _strip_end(tidy(reason))
+    if UNWELL.match(r):
+        return "as I am unwell"
+    r = re.sub(r"(?i)^i\s+(?:have|am having)\s+", "I have ", r)
+    r = re.sub(r"(?i)\b(?:a\s+)?doctor(?:'s)?\s+appointment", "a doctor's appointment", r)
+    if re.match(r"(?i)(?:car|bike|vehicle|son|daughter|mother|father|wife|husband|child|kid|brother|sister|family)\b", r):
+        r = "my " + _lower_first(r)  # "car broke down" -> "as my car broke down"
+    if re.match(r"(?i)^(?:I|my|we|our|there)\b", r):
+        return "as " + _lower_first(r)
+    return "due to " + _lower_first(re.sub(r"(?i)^(?:a|an)\s+", "a ", r))
+
+
+LEAVE = re.compile(r"\b(?:leave|day off|days off|time off|off day|holiday|half day)\b", re.I)
+
+
+def _leave(action: str) -> dict | None:
+    """'need leave tomorrow because i am sick', 'i will be on leave from 20 nov to 25 nov'."""
+    away = re.match(r"(?i)^(?:i\s+)?(?:will not|won't|wont|cannot|can't|shall not|would not|am not)\s+(?:be\s+able\s+to\s+)?"
+                    r"(?:be\s+)?(?:come|coming|attend|attending|make it|join|available|in)\b(?:\s+(?:to\s+)?(?:the\s+)?(?:office|work|duty))?\s*(.*)$",
+                    action.strip())
+    if away:
+        rest = away.group(1)
+        reason, rest = _take(REASON, rest, 1)
+        m = re.search(r"\s*,\s*((?:my|our|i|we|there)\b.+)$", rest, re.I)  # "..., my mother is in hospital"
+        if m and not reason:
+            reason, rest = m.group(1), rest[: m.start()]
+        whens = []
+        while True:
+            w, rest2 = _take_when(rest)
+            if not w:
+                break
+            whens.append(_when_text(w))
+            rest = rest2
+        when = " ".join(whens)
+        if when and re.match(rf"(?i){DAY}$|\d", when):
+            when = "on " + when
+        reason_s = f", {_reason_text(reason)}" if reason else ""
+        when_s = f" {when}" if when else ""
+        subject = "Absence Notice" + (f" – {_title_subject(re.sub(r'^on ', '', when))}" if when else "")
+        return {"intent": "leave", "subject": subject,
+                "paragraphs": [f"Please note that I will not be able to come to the office{when_s}{reason_s}.",
+                               "I can be reached by phone for anything urgent. Thank you for your understanding."]}
+    late = re.match(r"(?i)^(?:i\s+)?(?:will|'ll|shall|might|may)\s+be\s+(?:a\s+(?:bit|little)\s+)?(?:late|delayed)\b\s*(.*)$", action.strip())
+    if late:
+        rest = late.group(1)
+        reason, rest = _take(REASON, rest, 1)
+        m = re.search(r"\s*,\s*(.+)$", rest)  # "..., car broke down"
+        if m and not reason:
+            reason, rest = m.group(1), rest[: m.start()]
+        when, rest = _take_when(rest)
+        when_s = f" {_when_text(when)}" if when else ""
+        reason_s = f", {_reason_text(reason)}" if reason else ""
+        return {"intent": "leave", "subject": "Late Arrival" + (f" – {_title_subject(_when_text(when))}" if when else ""),
+                "paragraphs": [f"Please note that I will be arriving late{when_s}{reason_s}. I will be in as soon as I can "
+                               "and will catch up on anything pending.",
+                               "Thank you for your understanding."]}
+    action = re.sub(r"(?i)^(?:approve|sanction|grant)\s+(?:me\s+)?(?:my\s+)?(?=(?:a\s+)?(?:leave|day off|half day)\b)", "request ", action.strip())
+    # "i have a doctor appointment on friday so need half day" -> leave, with the first part as the reason
+    because = re.match(r"(?i)^(.+?)[,]?\s+(?:so|and so|therefore|hence|that is why|thats why)\s+(?:i\s+)?(?:need|want|would like|"
+                       r"request|have to take|will take|am taking)\s+(?:a\s+)?((?:leave|half day|day off|time off)\b.*)$", action)
+    if because:
+        cause, action = because.group(1), because.group(2)
+        w, cause = _take_when(cause)
+        action = f"{action} {w} because {cause}" if w else f"{action} because {cause}"
+    # "I have the day off tomorrow", "tomorrow is my holiday", "I am off tomorrow" -> "I will be on leave tomorrow"
+    action = re.sub(r"(?i)^(?:i\s+have|i've\s+got|i\s+have\s+got)\s+(?:the\s+|a\s+)?(?:day\s+off|leave|holiday|off)\b", "I will be on leave", action.strip())
+    action = re.sub(rf"(?i)^((?:today|tomorrow|{DAY})(?:\s+and\s+(?:today|tomorrow|{DAY}))?)\s+(?:is|are|will be)\s+my\s+(?:holiday|leave|day off|off(?:\s+day)?)\b",
+                    r"I will be on leave \1", action)
+    action = re.sub(r"(?i)^i\s+(?:am|will be)\s+off\b", "I will be on leave", action)
+    a = re.sub(r"(?i)^(?:i\s+)?(?:would like to|want to|wanna|need to|have to|want|need|require|request(?:ing)?|"
+               r"apply(?:ing)? for|take|taking|get)\s+(?:a\s+|an\s+|for\s+)?", "", action.strip()).strip()
+    notice = re.match(r"(?i)^(?:i\s+)?(?:am|will be|'ll be|shall be|would be)\s+on\s+", action.strip())
+    if not (LEAVE.match(a) or notice and LEAVE.search(action)):
+        return None
+    rest = re.sub(r"(?i)^(?:i\s+)?(?:am|will be|'ll be|shall be|would be)\s+on\s+", "", a)
+    reason, rest = _take(REASON, rest, 1)
+    m = re.search(rf"(?i)\bfrom\s+(.+?)\s+(?:to|till|until)\s+(.+?)(?=$|[,;.])", rest)
+    whens = []
+    if m:
+        whens.append(f"from {_when_text(m.group(1))} to {_when_text(m.group(2))}")
+        rest = rest[: m.start()] + rest[m.end():]
+    while True:
+        w, rest2 = _take_when(rest)
+        if not w:
+            break
+        whens.append(_when_text(w))
+        rest = rest2
+    kind = LEAVE.search(rest)
+    what = kind.group(0).lower() if kind else "leave"
+    what = {"day off": "a day off", "off day": "a day off", "half day": "a half day's leave", "holiday": "leave",
+            "days off": "some days off", "time off": "some time off"}.get(what, "leave")
+    when = " ".join(whens)
+    if when and re.match(rf"(?i){DAY}$|\d", when):
+        when = "on " + when
+    reason_s = f", {_reason_text(reason)}" if reason else ""
+    when_s = f" {when}" if when else ""
+    label = "Leave Notification" if notice else "Leave Request"
+    when_subject = _title_subject(re.sub(r"(?i)^(?:on|from|for)\s+", "", when))
+    subject = f"{label} – {when_subject}" if when else label
+    if notice:
+        paras = [f"Please note that I will be on {what.replace('a day off', 'leave').replace('some ', '')}{when_s}{reason_s}.",
+                 "I will make sure any pending work is covered in my absence, and I can be reached by phone for anything urgent."]
+    else:
+        paras = [f"I would like to request {what}{when_s}{reason_s}.",
+                 "I will make sure any pending work is handed over and covered in my absence. I would be grateful for your approval."]
+    return {"intent": "leave", "subject": subject, "paragraphs": paras}
+
+
+def _apology(action: str) -> dict | None:
+    m = re.match(r"^(?:i\s+am\s+|i'm\s+|im\s+|(?:my\s+)?(?:sincere\s+)?)?(?:sorry|apologi[sz]e|apologies)\b(?:\s+(?:for|about|that|regarding))?\s*(.*)$", action, re.I)
+    if not m:
+        return None
+    thing = _strip_end(tidy(m.group(1)))
+    thing = re.sub(r"(?i)^to\s+(?:the\s+)?(?:\w+\s+){0,2}?for\s+", "", thing)  # "apologise to the guest for X" -> "X"
+    thing = re.sub(r"(?i)^(?:the|my)\s+", lambda x: x.group(0).lower(), thing)
+    if thing and not re.match(r"(?i)(the|my|our|any|this|that|not|being|\w+ing)\b", thing):
+        thing = "the " + thing
+    if re.match(r"(?i)not\b", thing):
+        thing = "not " + thing[4:]
+    topic = _title_subject(re.sub(r"(?i)^(?:the|my|our)\s+", "", thing))
+    subject = "Apology" + (f" – {topic}" if thing else "")
+    return {"intent": "apology", "subject": subject,
+            "paragraphs": [f"Please accept my sincere apologies for {_lower_first(thing) or 'the inconvenience caused'}. "
+                           "I understand the inconvenience this may have caused, and I am taking steps to ensure it does "
+                           "not happen again.",
+                           "Thank you for your patience and understanding."]}
+
+
+def _complaint(action: str) -> dict | None:
+    m = re.match(r"^(?:i\s+(?:want|would like|wish)\s+to\s+)?(?:(?:make|raise|file|lodge|register)\s+(?:a\s+)?)?complain(?:t)?s?\s+(?:about|regarding|against|on|of)\s+(.+)$", action, re.I)
+    if not m:
+        return None
+    thing = _strip_end(tidy(m.group(1)))
+    if not re.match(r"(?i)(the|a|an|our|my|your|this|these|\d)\b", thing):
+        thing = "the " + thing
+    return {"intent": "complaint", "subject": "Complaint – " + _title_subject(re.sub(r"(?i)^(?:the|a|an|our|my|your)\s+", "", thing)),
+            "paragraphs": [f"I would like to bring to your attention a concern regarding {_lower_first(_you(thing))}.",
+                           "I would appreciate it if this could be looked into and resolved at the earliest. Kindly let me "
+                           "know the steps being taken."]}
 
 
 QUESTION = re.compile(r"^(?:what|when|why|how|where|who|which|is|are|was|were|can|could|would|will|do|does|did|has|have|should)\b", re.I)
@@ -710,40 +881,52 @@ IMPERATIVE = re.compile(r"^(?:make|ensure|check|fix|repair|arrange|organi[sz]e|c
 
 def _general(action: str, verb: str, link: str) -> dict:
     a = _strip_end(tidy(action))
+    # "(can you) tell me when the chairs will arrive" -> a polite question.
+    m = re.match(r"(?i)^(?:please\s+)?(?:tell|inform|update|let)\s+(?:me|us)(?:\s+know)?\s+((?:when|if|whether|what|why|how|where|who|which)\b.+)$", a)
+    if m:
+        q = _you(m.group(1))
+        return {"intent": "question", "subject": _subject(m.group(1), query=True),
+                "paragraphs": [f"Could you please let me know {_lower_first(q)}?", "I look forward to hearing from you."]}
     if verb in ("tell", "ask", "instruct", "direct", "request", "urge", "advise") and link == "to" or (
             not verb and IMPERATIVE.match(a)):
         a = _you(a) if verb else a
         a2 = re.sub(r"(?i)^(?:please|kindly)\s+", "", a)
-        body = f"I am writing to request that you {_lower_first(a2)}."
+        body = f"Please {_lower_first(a2)}."
         subject = _subject(a2)
         return {"intent": "instruction", "subject": subject,
-                "paragraphs": [body, "Kindly ensure that this is given due priority and completed in a timely manner.",
-                               CONFIRM + " " + CLARIFY]}
-    if QUESTION.match(a) or action.strip().endswith("?") or link in ("if", "whether", "why", "when", "what", "how"):
+                "paragraphs": [body, "Kindly treat this as a priority and confirm once it has been done."]}
+    # "will be late tomorrow" / "can not come" are statements, not questions ("will you ..." is one).
+    statement = re.match(r"(?i)^(?:will|would|can|could|should|am|was|have|has|did|do)\s+(?!you|we|they|he|she|it|the|this|that|"
+                         r"there|i\b|your|our|my|all|any|someone|anyone)\w", a) and not action.strip().endswith("?")
+    if not statement and (QUESTION.match(a) or action.strip().endswith("?") or link in ("if", "whether", "why", "when", "what", "how")):
         q = a
         if link in ("if", "whether", "why", "when", "what", "how"):
-            q = f"{link} {_you(a)}"
-            body = f"Could you please let me know {_lower_first(q)}?"
+            q = f"{link} {_lower_first(_you(a))}"
+            body = f"Could you please let me know {q}?"
+            a = q  # the subject is built from the whole question ("why the report was not shared")
+        elif re.match(r"(?i)^(?:why|when|where|how|what|who|which|whether|if)\s+(?:the|my|our|your|this|that|these|those|he|she|"
+                      r"they|it|you|we|there|\w+'s)\b", q):
+            # "why the cleaning was not done?" (statement word order) -> "Could you please let me know why ...?"
+            body = f"Could you please let me know {_lower_first(_strip_end(q).rstrip('?'))}?"
         else:
             body = sentence(q).rstrip(".") + ("" if q.endswith("?") else "?")
         return {"intent": "question", "subject": _subject(a, query=True),
-                "paragraphs": [HOPE + " " + body, "I look forward to your response at your earliest convenience."]}
+                "paragraphs": [body, "I look forward to hearing from you."]}
     if link in ("about", "regarding", "re", "on", "of", "for"):
         topic = _lower_first(a)
         return {"intent": "inform", "subject": _subject(a),
-                "paragraphs": [f"{HOPE} I am writing to you regarding {topic}.",
-                               "I would appreciate the opportunity to discuss this matter with you at your earliest convenience.",
-                               "Please let me know a suitable time, or feel free to contact me should you require any further details."]}
+                "paragraphs": [f"I am writing to you regarding {topic}, and would appreciate the opportunity to discuss it "
+                               "with you.",
+                               "Please let me know a time that suits you."]}
     # A statement: "inform X that ...", or plain text.
     stmt = _lower_first(a)
     if verb in ("inform", "notify", "tell", "update", "warn") or link == "that" or re.match(r"(?i)^that\b", a):
         stmt = re.sub(r"(?i)^that\s+", "", stmt)
-        body = f"I would like to inform you that {stmt}."
+        body = f"Please note that {stmt}."
     else:
         return _freeform(a)
     return {"intent": "inform", "subject": _subject(re.sub(r"(?i)^that\s+", "", a)),
-            "paragraphs": [body, "Please take note of the above and plan accordingly.",
-                           "Should you have any questions, please do not hesitate to contact me."]}
+            "paragraphs": [body + " Kindly plan accordingly.", QUESTIONS]}
 
 
 SMALL_WORDS = {"a", "an", "the", "and", "or", "of", "for", "to", "in", "on", "at", "by", "with", "from", "as"}
@@ -816,6 +999,9 @@ def greeting(names: list[str]) -> str:
 
 
 FORMAL = [
+    # A sentence typed without "I": "need the report by friday" -> "I need ..."
+    (r"^(need|want|have to|would like|cannot|could not|did not|am going to|"
+     r"will(?!\s+(?:you|we|they|he|she|it|this|that|these|the|there|all|everyone)\b))\b", lambda m: "I " + m.group(1).lower()),
     (r"\bcan't\b", "cannot"), (r"\bwon't\b", "will not"), (r"\bdon't\b", "do not"), (r"\bdoesn't\b", "does not"),
     (r"\bdidn't\b", "did not"), (r"\bisn't\b", "is not"), (r"\baren't\b", "are not"), (r"\bwasn't\b", "was not"),
     (r"\bweren't\b", "were not"), (r"\bhaven't\b", "have not"), (r"\bhasn't\b", "has not"), (r"\bshouldn't\b", "should not"),
@@ -828,22 +1014,33 @@ FORMAL = [
     (r"\bI want\b", "I would like"), (r",\s+there (is|are)\b", r", as there \1"), (r"\bwe want to\b", "we would like to"),
     (r"\bwe want\b", "we would like"), (r"\bI need you to\b", "I would request you to"), (r"\bI need\b", "I require"),
     (r"\bwe need\b", "we require"), (r"\bas soon as possible\b", "at the earliest"), (r"\bget back to me\b", "respond"),
-    (r"\bsend me\b", "share with me"), (r"\btell me\b", "inform me"), (r"\blet me know\b", "kindly let me know"),
-    (r"\bcan you\b", "could you kindly"), (r"\bthanks a lot\b", "thank you very much"), (r"\bthanks\b", "thank you"),
-    (r"\bsorry\b", "I apologise"), (r"\bfix\b", "resolve"), (r"\bfixed\b", "resolved"), (r"\bbuy\b", "purchase"),
-    (r"\bbought\b", "purchased"), (r"\ba lot of\b", "a considerable number of"), (r"\blots of\b", "a considerable number of"),
-    (r"\bstuff\b", "items"), (r"\bbig\b", "significant"),
-    (r"\bget (it|this|them|these|the \w+) (fixed|repaired|resolved|sorted)\b", r"have \1 resolved"),
+    (r"\bsend me\b", "share with me"), (r"\btell me\b", "inform me"),
+    (r"\bcan you\b", "could you"), (r"\bthanks a lot\b", "thank you very much"), (r"\bthanks\b", "thank you"),
+    (r"\bsorry\b", "I apologise"),
+    (r"\bfix(ed)?\b(?=\s+(?:the |this |that |these |those |my |our |your |all )?(?:\w+ )?(?:issues?|problems?|errors?|bugs?|matters?|complaints?|quer(?:y|ies)|discrepanc(?:y|ies)|mistakes?)\b)",
+     lambda m: "resolved" if m.group(1) else "resolve"),
+    (r"\bfix\b", "repair"), (r"\bfixed\b", "repaired"), (r"\bbuy\b", "purchase"),
+    (r"\bbought\b", "purchased"), (r"\ba lot of\b", "a large number of"), (r"\blots of\b", "a large number of"),
+    (r"\bstuff\b", "items"), (r"\blate coming\b", "late arrival"), (r"\bcoming late\b", "late arrival"),
+    (r"\b(today|tomorrow|now) itself\b", r"\1"),
+    (r"^(the [\w ]{2,40}?) (?:has|have) not (?:come|arrived|been received) yet\b",
+     lambda m: "I have not yet received " + m.group(1)[:1].lower() + m.group(1)[1:]),
+    (r"\bget (the [^.,;]{2,40}?) (fixed|repaired)\b", r"have \1 repaired"),
+    (r"\bget (it|this|them|these|the \w+(?: \w+)?) (fixed|repaired)\b", r"have \1 repaired"),
+    (r"\bget (it|this|them|these|the \w+(?: \w+)?) (resolved|sorted)\b", r"have \1 resolved"),
     (r"\bget (it|this|them|these|the \w+) (done|completed|finished)\b", r"have \1 completed"),
     (r"\bits (done|ready|complete|completed|working|fixed|resolved|finished|over|available)\b", r"it is \1"),
     (r"\bthere (?:is|are) (?:a )?lots? of\b", "there are numerous"), (r"\blots? of\b", "numerous"),
     (r"\b(is|are) not (\w+ing) since\b", lambda m: ("has" if m.group(1).lower() == "is" else "have") + f" not been {m.group(2)} since"),
     (r"\bI want (?=(?:the|a|an|all|your|this|these)\b)", "I would like to request "),
     (r"\bwhen it is done\b", "once it has been completed"),
-    (r"\bhelp\b(?=\s+(?:me|us)\b)", "assist"), (r"\bcheck\b(?=\s+(?:the|this|these|all|it)\b)", "review"),
-    (r"\bstart\b(?=\s+(?:the|this|work|working)\b)", "commence"), (r"\bmake sure\b", "ensure"),
+    (r"\bhelp\b(?=\s+(?:me|us)\b)", "assist"), (r"\bmake sure\b", "ensure"),
     (r"\bkindly kindly\b", "kindly"), (r"\bplease kindly\b", "kindly"), (r"\bkindly please\b", "kindly"),
     (r"\bvery very\b", "very"), (r"\breally\s+", ""), (r"\bjust\s+(?=[a-z])", ""), (r"\bbasically,?\s+", ""),
+    # "is not working since 2 days" -> "has not been working for the past 2 days"
+    (r"\b(is|are) not (\w+ing) (?=since (?:\d+|two|three|four|five|six|seven|a few|few|several) )",
+     lambda m: ("has" if m.group(1).lower() == "is" else "have") + f" not been {m.group(2)} "),
+    (r"\bsince (\d+|two|three|four|five|six|seven|a few|few|several) (days?|weeks?|months?|hours?)\b", r"for the past \1 \2"),
 ]
 FILLER_SENTENCE = re.compile(r"^(?:ok(?:ay)?|(?:hi|hello|hey|dear|salam|assalam\w*|aoa|good (?:morning|afternoon|evening))\b[^.!?]{0,30}|"
                              r"regards.*|thanks?(?: you)?(?: so much| very much)?|thank you\.?|bye|best(?: regards)?.*|sincerely.*|"
@@ -862,10 +1059,20 @@ def formalize(text: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", t)
 
 
+GREETING_LEAD = re.compile(r"^(?:hi|hello|hey|dear|salam|salaam|assalam\w*(?:\s+o\s+alaikum)?|aoa|good (?:morning|afternoon|evening))"
+                           r"\b(?:\s+(?!i\b|we\b|pls\b|please\b|kindly\b)[a-z]+){0,2}\s*[,!.:-]\s*", re.I)
+
+
 def _split_sentences(text: str) -> list[str]:
     text = re.sub(r"(?i),\s+(?=(?:please|pls|plz|kindly)\b)", ". ", text.strip())
+    text = re.sub(r"(?i),\s+(?=(?:get|have|make)\s+(?:it|them|this|these)\s+\w+ed\b)", ". ", text)  # "..., get it fixed"
     parts = re.split(r"(?<=[.!?])\s+|\n+", text)
-    return [p.strip(" -*•\t") for p in parts if p and p.strip(" -*•\t")]
+    out = []
+    for p in parts:
+        p = GREETING_LEAD.sub("", p.strip(" -*•\t")).strip(" -*•\t")  # "Salam, I will ..." -> "I will ..."
+        if p:
+            out.append(p)
+    return out
 
 
 def _polish_sentence(s: str) -> str:
@@ -874,7 +1081,8 @@ def _polish_sentence(s: str) -> str:
     lead = ""
     if m:
         lead, s = "Additionally, ", m.group(2)
-    if IMPERATIVE.match(s) and not re.match(r"(?i)(please|kindly)\b", s):
+    imperative = IMPERATIVE.match(s) or re.match(r"(?i)have (?:it|them|this|these|the \w+) \w+ed\b", s)
+    if imperative and not re.match(r"(?i)(please|kindly)\b", s):
         s = "please " + _lower_first(s)
     elif re.match(r"(?i)(pls|plz)\b", s):
         s = re.sub(r"(?i)^(pls|plz)\b", "please", s)
@@ -905,15 +1113,17 @@ def _freeform(action: str) -> dict:
     first = re.split(r"[,;:]", first)[0]
     first = re.sub(r"(?i)^(?:the|a|an)\s+", "", _strip_end(first))
     subject = _subject(action)
-    return {"intent": "message", "subject": subject,
-            "paragraphs": [HOPE] + paras + ["Should you have any questions or require any further information, please do not hesitate to contact me."]}
+    asks = any(re.match(r"(?i)(?:additionally,\s+)?(?:please|kindly|could you|would you|can you)\b(?!\s+(?:find|note|see|refer))", s)
+               or s.endswith("?") for s in polished)
+    closing = "Thank you for your prompt attention to this." if asks else QUESTIONS
+    return {"intent": "message", "subject": subject, "paragraphs": paras + [closing]}
 
 
 def signature_block(sig: dict | str | None) -> str:
     if isinstance(sig, str) or sig is None:
         sig = {"name": sig or ""}
     lines = [str(sig.get(k) or "").strip() for k in ("name", "title", "company", "phone")]
-    return "Best regards,\n\n" + "\n".join(x for x in lines if x)
+    return "Best regards,\n" + "\n".join(x for x in lines if x)
 
 
 def write(note: str, recipient_names: list[str] | None = None, my_name: dict | str = "", parsed: dict | None = None,
@@ -934,16 +1144,16 @@ def write(note: str, recipient_names: list[str] | None = None, my_name: dict | s
         if not _matches_template(sents[0], verb):
             return _finish(_freeform("\n".join(sents)), p, recipient_names, my_name)
         action = sents[0]
-        extra = " ".join(sentence(formalize(tidy(x))) for x in sents[1:])
-    elif polish:
-        action = sents[0]
+        extra = " ".join(_polish_sentence(x) for x in sents[1:])
+    else:
+        action = sents[0]  # one sentence, without a typed greeting ("Salam, ...")
     # Tidy the instruction once (spelling, shorthand) before matching templates.
     action = re.sub(r"(?i)^(?:can|could|would|will)\s+you\s+(?:please\s+|kindly\s+)?", "", action).rstrip(" ?")
     action_t = tidy(action)
     if not re.match(r"(?i)^\s*(?:hold|stop|withhold|freeze|block|release|resume|deduct|cut|increase|revise|pay|process)\b", action_t):
         action_t = names_in(action_t)
-    out = None
-    if verb == "remind":
+    out = _leave(action_t) or _apology(action_t) or _complaint(action_t)
+    if not out and verb == "remind":
         out = _reminder(action_t, verb)
     if not out and verb in ("thank", "congratulate"):
         out = _thanks(action_t, verb)
@@ -961,7 +1171,8 @@ def write(note: str, recipient_names: list[str] | None = None, my_name: dict | s
 
 def _matches_template(text: str, verb: str = "") -> bool:
     t = names_in(tidy(text))
-    return any(fn(t) for fn in (_salary, _meeting, _approval, _explanation, _follow_up, _request_doc)) or bool(
+    return any(fn(t) for fn in (_leave, _apology, _complaint, _salary, _meeting, _approval, _explanation, _follow_up,
+                                _request_doc)) or bool(
         _reminder(t, verb) or _thanks(t, verb))
 
 

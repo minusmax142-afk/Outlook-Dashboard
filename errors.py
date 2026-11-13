@@ -51,6 +51,12 @@ class ServiceUnavailable(OutlookError):
     code = "service_unavailable"
 
 
+class TranslationUnavailable(OutlookError):
+    """The free translation service couldn't be reached (the mailbox itself is fine)."""
+    status = 503
+    code = "translation_unavailable"
+
+
 # Classic Outlook (COM) specific
 class OutlookNotRunning(OutlookError):
     status = 503

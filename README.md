@@ -111,7 +111,10 @@ Pick a period (today, 3, 7, 14 or 30 days) for the Inbox.
 - **Your signature** (name, job title, company, phone) is set once in the Write for me window (`signature.json`).
 - **Make professional** in the New mail window rewrites what you typed: formal wording, grammar and spelling fixes,
   a proper greeting, opening and closing, and your signature. **Undo rewrite** puts your text back.
-- Templates and rules only: no AI service, nothing leaves your PC.
+- **Any language**: notes in Roman Urdu, Roman Hindi, Urdu, Hindi or any other language are translated to English
+  first, then written up as a professional email. This uses Google's free translation services (no key, no cost):
+  only the non-English lines are sent to Google; English lines never leave your PC. Needs an internet connection.
+- Writing the email itself uses templates and rules on your PC (no AI service).
 
 ---
 
@@ -140,6 +143,7 @@ If the mail server can't be reached directly (for example, a firewall), the dash
 | `tasks_store.py` | Local task list (SQLite) |
 | `categories.py` | Colour categories (names/colours; assignments are IMAP keywords) |
 | `writer.py` | "Write for me": short note -> professional email (templates, no AI) |
+| `translate.py` | Roman Urdu / Hindi / any language -> English before writing (free Google services) |
 | `contacts.py` | People you email (from mail headers) and remembered names, for Write for me |
 | `summarizer.py` | One-line email summaries and email types (rules, no AI) |
 | `task_finder.py` | Rules that find requests and deadlines in emails |

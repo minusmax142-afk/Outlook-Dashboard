@@ -3237,7 +3237,7 @@
       cc: r.cc.map((p) => ({ address: p.address })),
       subject: r.subject,
       body: r.body,
-      status: "Check it, then Send",
+      status: r.translated ? `Translated from ${r.languages.join(", ")}: check it, then Send` : "Check it, then Send",
     });
   }
 
@@ -3359,7 +3359,9 @@
       }
       compose.dirty = true;
       setPolishLabel();
-      $("compose-status").textContent = "Rewritten: check it, then Send";
+      $("compose-status").textContent = r.translated
+        ? `Translated from ${r.languages.join(", ")} and rewritten: check it, then Send`
+        : "Rewritten: check it, then Send";
       $("c-body").scrollTop = 0;
     } catch (err) {
       $("compose-status").textContent = before;

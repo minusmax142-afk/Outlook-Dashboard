@@ -36,6 +36,7 @@ from imapclient.exceptions import IMAPClientError, LoginError
 import imap_account
 import categories
 import contacts
+import translate
 import writer
 import tasks_store
 from errors import BadRequest, NotFound, NotSignedIn, OutlookError, ServiceUnavailable
@@ -1498,6 +1499,8 @@ def write_email(note: str, choices: dict | None = None, remember: bool = True, p
         raise BadRequest("Write what the email should say.")
     if len(note) > 5000:
         raise BadRequest("Please keep the text under 5000 characters.")
+    # Roman Urdu / Hindi / any language -> English first (English lines stay as typed and stay on this PC).
+    note, lang = translate.to_english(note)
     book = _contact_book()
     people = book["people"]
     parsed = writer.parse(note)
@@ -1529,4 +1532,4 @@ def write_email(note: str, choices: dict | None = None, remember: bool = True, p
     except ValueError:
         raise BadRequest("Add what the email should say.")
     ready = all(r["address"] for r in to + cc)
-    return {**out, "to": to, "cc": cc, "ready": ready, "signature": sig}
+    return {**out, "to": to, "cc": cc, "ready": ready, "signature": sig, **lang}
