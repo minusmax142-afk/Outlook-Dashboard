@@ -115,6 +115,12 @@ Pick a period (today, 3, 7, 14 or 30 days) for the Inbox.
   first, then written up as a professional email. This uses Google's free translation services (no key, no cost):
   only the non-English lines are sent to Google; English lines never leave your PC. Needs an internet connection.
 - Writing the email itself uses templates and rules on your PC (no AI service).
+- **Give a task**: switch Write for me to *Give a task*, write the task and who it is for (e.g. *give task to qasim
+  to prepare the stock report by friday*), optionally pick a due date and High priority. It writes a clear task
+  email; when you click Send, the task is added to **Tasks › Given** with who it went to and the due date
+  (use **Remind** there to send a follow-up).
+- **Tasks tabs**: *My tasks* (your own list), *Given* (tasks you assigned), *Received* (tasks added from other
+  people's emails, showing who asked).
 
 ---
 

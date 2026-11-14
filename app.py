@@ -34,6 +34,19 @@ PORT = 5000
 ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 
 app = Flask(__name__)
+
+
+@app.context_processor
+def asset_version():
+    """?v=<last change> on app.js / CSS links, so the browser never mixes an old script with a new page."""
+    import os
+
+    folder = os.path.join(app.root_path, "static")
+    try:
+        v = max(int(os.path.getmtime(os.path.join(folder, f))) for f in ("app.js", "style.css", "theme.css"))
+    except OSError:
+        v = 0
+    return {"asset_v": v}
 app.json.sort_keys = False
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024  # one compose request
 
@@ -214,8 +227,32 @@ def api_write():
     choices = body.get("choices")
     if choices is not None and not isinstance(choices, dict):
         raise BadRequest("Invalid recipients.")
+    task = body.get("task")
+    if task is not None and not isinstance(task, dict):
+        raise BadRequest("Invalid task details.")
     return _need("write_email")(str(body.get("note") or ""), choices, remember=body.get("remember", True) is not False,
-                                polish=body.get("polish") is True)
+                                polish=body.get("polish") is True, task=task)
+
+
+@app.post("/api/subject")
+def api_subject():
+    """{text} -> {subject}: a clear subject line for an email typed in the mail window (rules only, on this PC)."""
+    import re as _re
+
+    import subjects
+
+    text = str(_json().get("text") or "")[:5000]
+    # Leave out the greeting ("Dear Qasim,") and everything from the sign-off down.
+    text = _re.sub(r"(?is)\n\s*(?:best regards|kind regards|warm regards|regards|sincerely|yours sincerely|yours faithfully|"
+                   r"thanks (?:and|&) regards|thank you and regards|thanks|thank you)\b.*$", "", "\n" + text).strip()
+    text = _re.sub(r"(?i)^(?:dear|hi|hello|hey|salam|assalam\w*(?:\s+o\s+alaikum)?|aoa)\b[^\n,]{0,40}[,!.:]?\s*\n?", "", text).strip()
+    if not text:
+        return {"subject": ""}
+    try:
+        subject = subjects.make_subject(text)
+    except Exception:  # noqa: BLE001 - a missing suggestion must never block sending
+        subject = ""
+    return {"subject": "" if subject == "Message" else subject}
 
 
 @app.get("/api/signature")
@@ -238,7 +275,9 @@ def api_overview():
     from datetime import date
 
     today = date.today().isoformat()
-    open_tasks = [t for t in mail.list_tasks(include_completed=False) if not t["completed"]]
+    # Your own and received tasks; tasks you gave to others are tracked under Tasks > Given.
+    open_tasks = [t for t in mail.list_tasks(include_completed=False)
+                  if not t["completed"] and t.get("direction") != "given"]
     open_tasks.sort(key=lambda t: (t["due"] or "9999-12-31", t["createdDateTime"] or ""))
     data["tasks"] = {
         "open": len(open_tasks),
@@ -393,10 +432,16 @@ def api_compose():
         return jsonify({"code": "bad_request", "message": "Invalid attachment list."}), 400
 
     uploads = [(f.filename or "attachment", f.read()) for f in request.files.getlist("files") if f]
+    try:  # "Give a task" email: the task to record once it is sent
+        task = json.loads(request.form.get("task") or "null")
+        if task is not None and not (isinstance(task, dict) and str(task.get("title") or "").strip()):
+            raise ValueError
+    except ValueError:
+        return jsonify({"code": "bad_request", "message": "Invalid task details."}), 400
 
     @mail_api
     def handler():
-        return mail.compose(
+        result = mail.compose(
             action=request.form.get("action", ""),
             mode=request.form.get("mode", "new"),
             source_id=request.form.get("sourceId") or None,
@@ -410,8 +455,38 @@ def api_compose():
             uploads=uploads,
             quoted_html=request.form.get("quotedHtml") or None,
         )
+        if task and request.form.get("action") == "send":
+            result = {**result, "task": _record_given_task(task, _form_list("to"), result.get("messageIdHeader"))}
+        return result
 
     return handler()
+
+
+def _record_given_task(task: dict, to: list[str], message_id_header: str | None = None) -> dict | None:
+    """After a task email is sent: add it to Tasks > Given, with who it went to. Never fails the send."""
+    from email.utils import getaddresses
+
+    known = {str(p.get("address") or "").lower(): str(p.get("name") or "") for p in task.get("people") or []
+             if isinstance(p, dict)}
+    people = []
+    for name, addr in getaddresses(to):
+        addr = addr or name
+        label = known.get(addr.lower()) or name or addr.split("@")[0].replace(".", " ").title()
+        people.append((label, addr))
+    try:
+        return mail.create_task(
+            title=str(task.get("title") or "")[:255],
+            due=task.get("due") or None,
+            importance="high" if task.get("importance") == "high" else "normal",
+            notes=str(task.get("subject") or "")[:300],
+            direction="given",
+            person=", ".join(p[0] for p in people),
+            person_address=", ".join(p[1] for p in people),
+            **({"source_key": message_id_header} if message_id_header else {}),
+        )
+    except Exception:  # noqa: BLE001 - the email is already sent; the task is a convenience
+        app.logger.exception("Could not record the given task")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +497,12 @@ def api_compose():
 @app.get("/api/tasks")
 @mail_api
 def api_tasks():
+    sync = getattr(mail, "sync_given_tasks", None)
+    if sync is not None:
+        try:  # task emails you sent from anywhere -> Given (never blocks showing your tasks)
+            sync()
+        except Exception as err:  # noqa: BLE001
+            app.logger.warning("Given-task scan of Sent Items skipped: %s", type(err).__name__)
     tasks = mail.list_tasks(include_completed=_flag("completed"))
     tasks.sort(key=lambda t: (t["completed"], t["due"] or "9999-12-31", t["createdDateTime"] or ""))
     return {"tasks": tasks}
@@ -437,6 +518,8 @@ def api_create_task():
         notes=str(body.get("notes") or ""),
         message_id=body.get("messageId") or None,
         importance=str(body.get("importance") or "normal"),
+        **({"direction": str(body["direction"]), "person": str(body.get("person") or ""),
+            "person_address": str(body.get("personAddress") or "")} if body.get("direction") else {}),
     )
     if body.get("suggestionKey"):
         task_finder.mark_handled(str(body["suggestionKey"]))

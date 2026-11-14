@@ -173,6 +173,11 @@ def to_english(text: str) -> tuple[str, dict]:
             else:
                 out.append(line)
     except (OSError, ValueError, KeyError, IndexError, TypeError) as err:
+        if getattr(err, "code", None) == 429:
+            raise TranslationUnavailable(
+                "Google's free translation has paused for a while because of too many requests from this PC. "
+                "Please try again in an hour or so, or write this note in English for now."
+            ) from None
         raise TranslationUnavailable(
             "Couldn't translate your note: the free translation service isn't reachable right now "
             f"({type(err).__name__}). Check your internet connection and try again, or write the note in English."

@@ -26,7 +26,9 @@ NOUNS = {
     "recruit": "Recruitment of", "train": "Training of", "assign": "Assignment of", "allocate": "Allocation of",
     "count": "Count of", "audit": "Audit of", "reconcile": "Reconciliation of", "print": "Printing of",
     "remove": "Removal of", "shift": "Relocation of", "move": "Relocation of", "return": "Return of",
-    "implement": "Implementation of", "coordinate": "Coordination of", "maintain": "Maintenance of",
+    "implement": "Implementation of", "distribute": "Distribution of", "execute": "Execution of", "deploy": "Deployment of",
+    "launch": "Launch of", "test": "Testing of", "conduct": "Conduct of", "present": "Presentation of",
+    "design": "Design of", "create": "Creation of", "write": "Drafting of", "draft": "Drafting of", "coordinate": "Coordination of", "maintain": "Maintenance of",
     "increase": "Increase in", "reduce": "Reduction in", "stop": "Discontinuation of", "start": "Commencement of",
     "plan": "Planning of", "settle": "Settlement of", "secure": "Security of", "lock": "Locking of",
 }
@@ -42,6 +44,12 @@ def _clean(text: str) -> str:
     t = re.sub(r"(?i)^(?:dear|hi|hello)\b[^.,!?]*[.,!?]\s*", "", t)
     t = re.sub(r"(?i)^(?:please|kindly|pls|plz)\s+", "", t)
     t = re.sub(r"(?i)^(?:could|can|would|will) you (?:kindly |please )?", "", t)
+    # "Qasim, the generator ..." -> "the generator ..." (the person being addressed)
+    t = re.sub(r"^(?:[A-Z][a-z]+(?: [A-Z][a-z]+)?|Sir|Madam)\s*,\s+(?=[a-z]|The\b|Please\b|Kindly\b)", "", t)
+    t = re.sub(r"(?i)^(?:please|kindly|pls|plz)\s+", "", t)
+    # "please note that X" / "I would like to inform you that X" -> "X"
+    t = re.sub(r"(?i)^(?:note that|please note that|kindly note that|this is to inform you that|I (?:would like to|want to|wish to) "
+               r"(?:inform|let) you (?:know )?that|I am writing to (?:inform you|let you know) that|for your information,?)\s+", "", t)
     return t.strip(" .")
 
 
@@ -78,12 +86,93 @@ def _with_when(subject: str, text: str) -> str:
 
 
 def _strip_when(text: str) -> str:
-    t = text
+    t = re.sub(r"(?i)\s*\b(?:of|from|during|for)?\s*(?:last night|yesterday(?: night)?|this morning|this evening|tonight|last evening)\b", "", text)
     while True:
         found, rest = w._take_when(t)
         if not found:
             return t
         t = rest
+
+
+ROLES_TO_CALL = r"(plumber|electrician|technician|carpenter|mechanic|painter|cleaner|security|guard|driver|doctor|it team|it support|engineer|vendor|supplier)"
+VAGUE = re.compile(r"^(?:do the needful|look into (?:this|the|it)(?: matter| issue)?|take (?:the )?(?:necessary )?action|"
+                   r"(?:please )?handle (?:this|it)|check (?:this|it)|see (?:this|to it)|as discussed|for your information|fyi|"
+                   r"for your (?:kind )?(?:attention|action|review|approval))$", re.I)
+ADJ = r"(very |too |so |extremely |quite )?(high|low|late|slow|poor|bad|dirty|noisy|expensive|delayed|incorrect|wrong|missing)"
+
+
+def _special(s: str, full: str) -> str | None:
+    """Patterns the general rules got wrong (each checked on the first sentence, `full` for context)."""
+    T = w._title_subject
+    low = s.lower().strip(" .")
+
+    # "the package should be prepared by 16 november and implemented by 23 november"
+    #   -> "Preparation and Implementation of Package – By Mon 16 Nov"
+    m = re.match(r"(?i)^(?:the\s+|our\s+|your\s+|this\s+|all\s+(?:the\s+)?)?(.{2,60}?)\s+(?:should|must|shall|needs? to|has to|"
+                 r"have to|is to|are to|will need to|is required to|ought to)\s+be\s+(\w+)\b(.*)$", s)
+    if m:
+        import task_finder
+        verbs = [m.group(2)] + re.findall(r"(?i)\band\s+(?:then\s+)?(\w+ed)\b", m.group(3))
+        nouns = []
+        for v in verbs:
+            base = task_finder.TO_BASE.get(v.lower())
+            if base and base in NOUNS:
+                nouns.append(NOUNS[base].rsplit(" ", 1)[0])  # "Preparation of" -> "Preparation"
+        if nouns:
+            when, _ = w._take_when(m.group(3))
+            head = " and ".join(dict.fromkeys(nouns))
+            sub = f"{head} of {T(_cap(m.group(1), 6))}"
+            return f"{sub} – {w.deadline_label(when)}" if when else sub
+
+    # "kindly look into this matter", "please do the needful" -> nothing specific to name
+    if VAGUE.match(low):
+        return "Action Required"
+    # "please call the plumber, there is a leakage in the washroom of 2nd floor"
+    m = re.match(rf"(?i)^(?:call|contact|send|arrange|get)\s+(?:the\s+|a\s+|an\s+)?{ROLES_TO_CALL}\b(.*)$", s)
+    if m:
+        why = re.search(r"(?i)\b(leak(?:age)?|blockage|short circuit|fault|breakdown|damage|fire|fight|theft)\b(?:\s+(?:in|at|of|on)\s+(?:the\s+)?([^,.;]+))?", full)
+        role = T(m.group(1).title() if m.group(1).lower() not in ("it team", "it support") else "IT Support")
+        if why:
+            place = f" in {T(_cap(_strip_when(why.group(2)), 6))}" if why.group(2) else ""
+            return f"{T(why.group(1).capitalize())}{place} – {role} Required"
+        return _with_when(f"{role} Required", full)
+    # "make a list of all broken furniture" / "prepare a report on ..."
+    m = re.match(r"(?i)^(?:make|prepare|create|compile)\s+(?:a\s+|an\s+|the\s+)?(list|report|summary|record|schedule|plan|roster)\s+(of|on|for|about)\s+(?:all\s+(?:the\s+)?|the\s+)?(.+)$", s)
+    if m:
+        return _with_when(f"{T(m.group(1).capitalize())} of {T(_cap(_strip_when(m.group(3)), 6))} Required", full)
+    # "update me about the guest complaint of room 305"
+    m = re.match(r"(?i)^(?:update|inform|brief)\s+(?:me|us)\s+(?:about|on|regarding|of)\s+(?:the\s+)?(.+)$", s)
+    if m:
+        return f"Update Requested – {T(_cap(_strip_when(m.group(1)), 7))}"
+    # "i want to discuss the budget with you"
+    m = re.match(r"(?i)^(?:I|we)\s+(?:would like|want|need|wish)\s+to\s+(?:discuss|talk about|talk to you about|speak (?:to you )?about)\s+(?:the\s+)?(.+?)(?:\s+with\s+you)?$", s)
+    if m:
+        return _with_when(f"Discussion: {T(_cap(_strip_when(m.group(1)), 6))}", full)
+    # "electricity bill of last month is very high, find out the reason"
+    m = re.match(rf"(?i)^(?:the\s+|our\s+)?(.{{3,50}}?)\s+(?:is|are|was|were|seems?|has been|have been)\s+{ADJ}\b", s)
+    if m:
+        thing = _cap(re.sub(r"(?i)\s+(?:of|for)\s+(?:the\s+)?(?:last|this|previous|current)\s+(?:month|week)$", "", m.group(1)), 6)
+        return f"{T(m.group(3).capitalize())} {T(thing)} – Review Required"
+    # "tell ahmed his performance is very good this month" / "great work on the audit"
+    if re.search(r"(?i)\b(?:performance|work|effort|job)\b.*\b(?:good|great|excellent|outstanding|appreciated)\b|"
+                 r"\b(?:good|great|excellent|outstanding)\s+(?:work|job|performance|effort)\b", low):
+        return _with_when("Appreciation for Your " + ("Performance" if "performance" in low else "Work"), full)
+    # payments: "dont release any payment to abc traders" / "do not stop payment of abc traders"
+    m = re.match(r"(?i)^(?:do not|don't|dont|never)\s+(release|make|process|stop|hold)\s+(?:any\s+)?(?:further\s+)?payments?\s+(?:to|of|for)\s+(.+?)(?:\s+(?:until|till)\b.*)?$", s)
+    if m:
+        who = T(_cap(_strip_when(m.group(2)), 5))
+        return f"Payment on Hold – {who}" if m.group(1).lower() in ("release", "make", "process") else f"Continue Payment – {who}"
+    # "the new staff will join from monday, please arrange their id cards"
+    m = re.match(r"(?i)^(?:the\s+)?(.{3,40}?)\s+(?:will|is going to|are going to|shall)\s+(join|start|arrive|visit|leave|resign)\b", s)
+    if m:
+        verb = {"join": "Joining", "start": "Starting", "arrive": "Arrival", "visit": "Visit", "leave": "Leaving",
+                "resign": "Resignation"}[m.group(2).lower()]
+        return _with_when(f"{T(_cap(m.group(1), 5))} {verb}", s)
+    # "make sure all staff wear uniform from tomorrow"
+    m = re.match(r"(?i)^(?:ensure|make sure)\s+(?:that\s+)?(all\s+(?:the\s+)?staff|everyone|all employees|staff|the team|all departments)\s+(?:should\s+|must\s+|will\s+)?(\w+)\s+(.+)$", s)
+    if m:
+        return _with_when(f"Action Required: {T(m.group(1).replace('the ', ''))} to {T(m.group(2))} {T(_cap(_strip_when(m.group(3)), 5))}", full)
+    return None
 
 
 def make_subject(note: str) -> str:
@@ -94,6 +183,9 @@ def make_subject(note: str) -> str:
     full = " ".join(sents)
     s = _clean(sents[0])
     T = w._title_subject
+    special = _special(s, full)
+    if special:
+        return special
 
     # "have the AC of room 204 repaired" -> "Repair of AC of Room 204"
     m = re.match(r"(?i)^(?:get|have)\s+(?:the\s+)?(.+?)\s+(repaired|fixed|resolved|cleaned|checked|replaced|installed|serviced)\b(.*)$", s)
@@ -116,7 +208,7 @@ def make_subject(note: str) -> str:
     # Leave / absence / late arrival (about me)
     m = re.search(r"(?i)\b(?:I am|I will be|I'll be|I shall be)\s+on\s+leave\b(.*)", s)
     if m or re.search(r"(?i)\bI (?:would like to|want to|need to) (?:take|apply for|request) (?:a )?leave\b", s):
-        dates = re.search(r"(?i)\bfrom\s+(.+?)\s+(?:to|till|until)\s+([^,.;]+?)(?=$|[,.;]|\s+(?:and|ahmed|\w+ will))", s)
+        dates = re.search(r"(?i)\bfrom\s+(.+?)\s+(?:to|till|until)\s+([^,.;]+?)(?=$|[,.;]|\s+(?:and|for|due|because|as|since|\w+ will)\b)", s)
         when = f"{dates.group(1)} to {dates.group(2)}" if dates else _when(s)
         label = "Leave Notification" if m else "Leave Request"
         return f"{label} – {T(when)}" if when else label
@@ -182,6 +274,28 @@ def make_subject(note: str) -> str:
     if m:
         obj = re.sub(r"(?i)\b(is|are)\s+(\w+ed)\b", r"to Be \2", _strip_when(m.group(1)), count=1)
         return f"Action Required – {T(_cap(obj, 8))}"
+    m = re.match(r"(?i)^(?:send|share|submit|provide|forward|email|give)\s+(?:(?:it\s+)?(?:with|to)\s+(?:me|us)\s+|me\s+|us\s+)?(?:the\s+|your\s+|all\s+the\s+)?(.+)$", s)
+    if m and re.search(rf"(?i)\b(?:{w.DOC_WORDS})\b", m.group(1)):
+        obj, whens = m.group(1), []
+        while True:
+            found, rest = w._take_when(obj)
+            if not found:
+                break
+            whens.append(found)
+            obj = rest
+        if re.search(r"(?i)\b(?:at the earliest|as soon as possible|asap|urgently)\b", obj):
+            whens.append("as soon as possible")
+            obj = re.sub(r"(?i)\s*\b(?:at the earliest|as soon as possible|asap|urgently)\b", "", obj)
+        obj = re.sub(r"(?i)\s+(?:with|to)\s+(?:me|us)\b", "", _strip_when(obj)).strip()
+        # "for october" belongs to the document ("Sales Figures for October"), not the deadline
+        for x in [x for x in whens if w.BARE_MONTH.fullmatch(re.sub(r"(?i)^(?:for|of)\s+", "", x))]:
+            whens.remove(x)
+            obj = f"{obj} {x}"
+        when = whens[0] if whens else ""
+        obj = re.sub(r"(?i)\b(for|of) (jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b",
+                     lambda x: f"{x.group(1)} {x.group(2).capitalize()}", obj)
+        sub = f"Request: {T(w.short_title(obj))}"
+        return f"{sub} – {w.deadline_label(when)}" if when else sub
     m = re.match(r"(?i)^(\w+)\s+(.+)$", s)
     if m and m.group(1).lower() in NOUNS:
         obj = _strip_when(m.group(2))

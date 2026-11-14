@@ -893,7 +893,7 @@ def list_tasks(include_completed: bool = False) -> list[dict]:
 
 
 def create_task(title: str, due: str | None = None, notes: str = "", message_id: str | None = None,
-                importance: str = "normal") -> dict:
+                importance: str = "normal", **_given_or_received) -> dict:  # Outlook tasks have no given/received
     title = (title or "").strip()[:255]
     if not title:
         raise BadRequest("A task needs a title.")

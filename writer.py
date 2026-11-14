@@ -542,6 +542,10 @@ def _salary(action: str) -> dict | None:
 def _meeting(action: str) -> dict | None:
     if not re.search(r"\b(meeting|meet|call|session|briefing|discussion)\b", action, re.I):
         return None
+    # "call the plumber" / "call the technician" is an instruction, not a meeting.
+    if not re.search(r"\b(meeting|meet|session|briefing|discussion)\b", action, re.I) and not re.search(
+            r"\b(?:a|conference|video|zoom|teams|quick|short)\s+call\b|\bcall\s+with\b", action, re.I):
+        return None
     if not re.search(r"\b(schedule|arrange|set up|setup|organi[sz]e|call|book|fix|plan|hold|have|meet|invite|conduct)\b|^meeting", action, re.I):
         return None
     rest = action
@@ -607,7 +611,9 @@ def _request_doc(action: str) -> dict | None:
     objl = _lower_first(obj)
     if not re.match(r"(?i)(the|a|an|my|our|your|all|this|these|those|\d)\b", objl):
         objl = "the " + objl
-    subject = "Request: " + _title_subject(re.sub(r"(?i)^(the|a|an|your|our|my)\s+", "", obj))
+    subject = "Request: " + _title_subject(short_title(re.sub(r"(?i)^(the|a|an|your|our|my)\s+", "", obj)))
+    if when:
+        subject += f" – {deadline_label(when)}"
     s = f"Could you please {verb} {objl}{_with_when(when)}"
     if reason:
         s += f", as {_lower_first(_strip_end(tidy(reason)))}"
@@ -1183,3 +1189,195 @@ def _finish(out: dict, p: dict, recipient_names, my_name) -> dict:
     body = hello + "\n\n" + "\n\n".join(paragraphs) + "\n\n" + signature_block(my_name)
     subject = re.sub(r"\s+", " ", out["subject"]).strip(" –-:")[:120] or "Message"
     return {"subject": subject, "body": body.strip(), "intent": out["intent"]}
+
+
+# ---------------------------------------------------------------------------
+# "Give a task": an assignment email, and the task it creates
+
+_VERBS = ("send share submit prepare provide complete finish finalise finalize arrange organise organize check inspect "
+          "review verify repair fix resolve clean update install replace order purchase buy book cancel confirm collect "
+          "deliver pay clear approve schedule investigate handle process issue transfer hire recruit train assign "
+          "allocate count audit reconcile print remove shift move return implement coordinate maintain increase reduce "
+          "stop plan settle secure lock call contact visit attend follow make ensure get bring take keep fill "
+          "draft write design create set close open distribute inform compile upload download email").split()
+_DOUBLE = {"stop", "plan", "get", "set", "put", "ship", "drop", "chat", "run", "shop", "submit", "commit", "cut"}
+
+
+def _gerund(v: str) -> str:
+    if v.endswith("ie"):
+        return v[:-2] + "ying"
+    if v in _DOUBLE:
+        return v + v[-1] + "ing"
+    if v.endswith("e") and not v.endswith(("ee", "ye", "oe")):
+        return v[:-1] + "ing"
+    return v + "ing"
+
+
+GERUNDS = {_gerund(v): v for v in _VERBS}
+
+TASK_LEAD = [
+    # give a task to qasim to/of send(ing) the report
+    re.compile(r"^(?:please\s+)?(?:give|assign|allot|hand)\s+(?:an?\s+|the\s+)?(?:new\s+)?task\s+to\s+(?P<who>.+?)\s*(?:\bto\b|\bof\b|\bfor\b|:|,|-|\bthat\b)\s*(?P<what>.+)$", re.I),
+    # give qasim the task of ... / assign bilal a task to ...
+    re.compile(r"^(?:please\s+)?(?:give|assign|allot)\s+(?P<who>(?:(?!(?:the|a|an|task)\b)\S+\s*){1,4}?)\s*(?:an?\s+|the\s+)?(?:new\s+)?task\s*(?:\bto\b|\bof\b|\bfor\b|:|,|-|\bthat\b)?\s*(?P<what>.+)$", re.I),
+    # task for hr: update the sheet
+    re.compile(r"^(?:task|new task)\s+(?:for|to)\s+(?P<who>.+?)\s*(?::|,|-|\bto\b)\s*(?P<what>.+)$", re.I),
+    # assign the monthly audit to ahmed
+    re.compile(r"^(?:please\s+)?assign\s+(?P<what>.+?)\s+to\s+(?P<who>[\w.@'-]+(?:\s+[\w.@'-]+)?)$", re.I),
+]
+
+_MONTHS = {m: i for i, m in enumerate("jan feb mar apr may jun jul aug sep oct nov dec".split(), 1)}
+_DAYS = "monday tuesday wednesday thursday friday saturday sunday".split()
+
+
+def resolve_due(when: str, today=None) -> str | None:
+    """'by friday' / 'tomorrow' / '20 nov' / '21/11' (dd/mm) / 'end of the month' -> 'YYYY-MM-DD' (None if unclear)."""
+    import calendar
+    from datetime import date, timedelta
+    today = today or date.today()
+    w = re.sub(r"(?i)^(?:by|before|on|until|till|for|within|latest by|no later than)\s+", "", (when or "").strip().lower())
+    w = re.sub(r"\s+(?:at|by|around)\s+.*$", "", w).strip(" .,")
+    w = re.sub(r"\s+itself$", "", w)
+    if not w:
+        return None
+    if w in ("today", "tonight", "the end of the day", "end of the day", "eod"):
+        return today.isoformat()
+    if w == "tomorrow":
+        return (today + timedelta(days=1)).isoformat()
+    if w == "day after tomorrow":
+        return (today + timedelta(days=2)).isoformat()
+    m = re.fullmatch(r"(\d+)\s+(day|days|week|weeks)", w)
+    if m:
+        return (today + timedelta(days=int(m.group(1)) * (7 if m.group(2).startswith("week") else 1))).isoformat()
+    if re.fullmatch(r"(?:the\s+)?end\s+of\s+(?:the\s+|this\s+)?month|eom", w):
+        return today.replace(day=calendar.monthrange(today.year, today.month)[1]).isoformat()
+    if re.fullmatch(r"(?:the\s+)?end\s+of\s+(?:the\s+|this\s+)?week", w):
+        return (today + timedelta(days=(4 - today.weekday()) % 7)).isoformat()  # Friday
+    if w == "next week":
+        return (today + timedelta(days=7 - today.weekday())).isoformat()  # next Monday
+    m = re.fullmatch(rf"(this\s+|coming\s+|next\s+)?({'|'.join(_DAYS)})", w)
+    if m:
+        ahead = (_DAYS.index(m.group(2)) - today.weekday()) % 7 or 7
+        return (today + timedelta(days=ahead)).isoformat()
+
+    def build(d: int, mo: int, y: str | None) -> str | None:
+        try:
+            if y:
+                return date(int(y) + (2000 if int(y) < 100 else 0), mo, d).isoformat()
+            dt = date(today.year, mo, d)
+            if dt < today - timedelta(days=60):  # "5 jan" written in November means next January
+                dt = date(today.year + 1, mo, d)
+            return dt.isoformat()
+        except ValueError:
+            return None
+
+    m = re.fullmatch(r"(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-z]{3})[a-z]*\.?(?:,?\s+(\d{4}))?", w)
+    if m and m.group(2) in _MONTHS:
+        return build(int(m.group(1)), _MONTHS[m.group(2)], m.group(3))
+    m = re.fullmatch(r"([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?", w)
+    if m and m.group(1) in _MONTHS:
+        return build(int(m.group(2)), _MONTHS[m.group(1)], m.group(3))
+    m = re.fullmatch(r"(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?", w)
+    if m:
+        return build(int(m.group(1)), int(m.group(2)), m.group(3))
+    return None
+
+
+def short_title(text: str, limit: int = 55) -> str:
+    """Shorten at a natural break ('... and share it with accounts' -> first part), never mid-phrase."""
+    t = _strip_end(re.sub(r"\s+", " ", text or "").strip())
+    if len(t) <= limit:
+        return t
+    for sep in (r",\s+", r"\s+and\s+(?:then\s+)?", r"\s+(?:so that|because|as|which|who|since|after|before|while)\s+"):
+        head = re.split(sep, t, maxsplit=1, flags=re.I)[0]
+        if 12 <= len(head) <= limit:
+            return _strip_end(head)
+    cut = t[:limit].rsplit(" ", 1)[0]
+    words = cut.split()
+    while words and words[-1].lower() in SMALL_WORDS | {"the", "a", "an", "all", "your", "our", "my", "this", "that"}:
+        words.pop()
+    return " ".join(words)
+
+
+def due_label(iso: str) -> str:
+    """'Due Today' / 'Due Tomorrow' / 'Due Fri 20 Nov' (year only when it isn't this year)."""
+    from datetime import date
+    d, today = date.fromisoformat(iso), date.today()
+    if d == today:
+        return "Due Today"
+    if (d - today).days == 1:
+        return "Due Tomorrow"
+    return f"Due {d.strftime('%a')} {d.day} {d.strftime('%b')}" + (f" {d.year}" if d.year != today.year else "")
+
+
+def deadline_label(when: str) -> str:
+    """'by friday' -> 'By Fri 20 Nov'; 'as soon as possible' -> 'Urgent'; 'by 5 pm' -> 'By 5 pm'."""
+    w = (when or "").strip()
+    if re.search(r"(?i)as soon as possible|asap|at the earliest|immediately|urgent", w):
+        return "Urgent"
+    iso = resolve_due(w)
+    if iso:
+        return due_label(iso).replace("Due ", "By ").replace("By Today", "Today").replace("By Tomorrow", "By Tomorrow")
+    t = _when_text(w)
+    return t[:1].upper() + t[1:]
+
+
+def pretty_date(iso: str) -> str:
+    from datetime import date
+    d = date.fromisoformat(iso)
+    return f"{d.strftime('%A')}, {d.day} {d.strftime('%B %Y')}"
+
+
+def task_parse(note: str) -> dict:
+    """{to, cc, title, when, extra}: who gets the task and what it is."""
+    p = parse(note)
+    sents = [x for x in _split_sentences(p["action"]) if not FILLER_SENTENCE.match(x.strip())] or [p["action"]]
+    first, extra = sents[0], sents[1:]
+    first = re.sub(r"(?i)^(?:can|could|would|will)\s+you\s+(?:please\s+|kindly\s+)?", "", first).strip().rstrip(" ?.")
+    to = list(p["to"])
+    for rx in TASK_LEAD:
+        m = rx.match(first)
+        if m:
+            to += _split_people(m.group("who"))
+            first = m.group("what")
+            break
+    else:
+        first = re.sub(r"(?i)^(?:a\s+|the\s+)?(?:new\s+)?task\s*(?:of|to|for|:|-)?\s*", "", first)
+    first = re.sub(r"(?i)^(?:to|of|for|that)\s+", "", first.strip())
+    words = first.split(" ", 1)
+    if words and words[0].lower() in GERUNDS:  # "sending the report" -> "send the report"
+        first = GERUNDS[words[0].lower()] + (" " + words[1] if len(words) > 1 else "")
+    first = re.sub(r"(?i)^(?:please|kindly|pls|plz)\s+", "", first)
+    first = re.sub(r"(?i)^(?:he|she|they|you)\s+(?:should|must|will|has to|have to|needs? to)\s+", "", first)
+    when, rest = _take_when(first)
+    title = _strip_end(formalize(tidy(_you(rest))))
+    title = re.sub(r"(?i)^(?:please|kindly)\s+", "", title)
+    if not IMPERATIVE.match(title):  # a plain noun: "the monthly audit" -> "Monthly audit"
+        title = re.sub(r"(?i)^(?:the|a|an)\s+", "", title)
+    return {"to": _dedupe(to), "cc": p["cc"], "title": (title[:1].upper() + title[1:])[:200], "when": when, "extra": extra}
+
+
+def task_email(note: str, recipient_names: list[str] | None = None, my_name: dict | str = "", due: str | None = None,
+               importance: str = "normal", parsed: dict | None = None) -> dict:
+    """{subject, body, intent: 'task', task: {title, due, importance}}. due: 'YYYY-MM-DD' picked by the user, if any."""
+    t = parsed or task_parse(note)
+    if not t["title"]:
+        raise ValueError("empty")
+    due = due or resolve_due(t["when"])
+    due_text = pretty_date(due) if due else (sentence(_when_text(t["when"])).rstrip(".") if t["when"] else "")
+    lines = [f"Task: {t['title']}"]
+    if due_text:
+        lines.append(f"Due date: {due_text}")
+    if importance == "high":
+        lines.append("Priority: High")
+    paras = ["I would like to assign you the following task:", "\n".join(lines)]
+    if t["extra"]:
+        paras.append(" ".join(_polish_sentence(x) for x in t["extra"]))
+    paras.append("Please confirm that you have received this task, and let me know once it has been completed"
+                 + (" or if you foresee any delay." if due_text else "."))
+    subject = f"Task: {_title_subject(short_title(t['title']))}" + (f" – {due_label(due)}" if due else "")
+    names = list(recipient_names or [])
+    hello = greeting(names) if names else "Dear Sir/Madam,"
+    body = hello + "\n\n" + "\n\n".join(paras) + "\n\n" + signature_block(my_name)
+    return {"subject": subject[:120], "body": body, "intent": "task",
+            "task": {"title": t["title"], "due": due, "importance": "high" if importance == "high" else "normal"}}

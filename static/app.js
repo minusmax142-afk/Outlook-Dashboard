@@ -1980,6 +1980,7 @@
       dirty: !!prefill.body,
       busy: false,
       subjectWarned: false,
+      taskPeople: (prefill.task && prefill.task.people) || [], // names from Write for me, for Tasks > Given
     });
     $("compose-title").textContent = prefill.title || TITLES[compose.mode];
     $("compose-status").textContent = "";
@@ -1997,6 +1998,7 @@
     hideConfirm();
     setComposeBusy(false, prefill.status || "");
     renderComposeAttachments();
+    setComposeTask(!!prefill.task, prefill.task || {});
 
     const quoted = prefill.quotedHtml || "";
     $("c-quoted-wrap").classList.toggle("hidden", !quoted);
@@ -2056,7 +2058,92 @@
     fd.append("removeAttachments", JSON.stringify(compose.removed));
     if (compose.mode !== "new" && compose.quotedHtml) fd.append("quotedHtml", compose.quotedHtml);
     compose.files.forEach((f) => fd.append("files", f, f.name));
+    const task = composeTaskPayload();
+    if (task) fd.append("task", JSON.stringify({ ...task, subject: $("c-subject").value }));
     return fd;
+  }
+
+  // "Send as task": any email (new, reply, forward) can go out as a task and is saved in Tasks > Given.
+  function setComposeTask(on, t = {}) {
+    compose.taskOn = !!on && !!$("c-task-row"); // the page may be older than this script
+    if (!$("c-task-row")) return;
+    $("c-task-toggle").setAttribute("aria-pressed", String(compose.taskOn));
+    $("c-task-row").classList.toggle("hidden", !compose.taskOn);
+    if (!compose.taskOn) return;
+    const subjectTitle = $("c-subject").value.replace(/^\s*(?:(?:re|fw|fwd)\s*:\s*)*(?:task\s*:\s*)?/i, "").replace(/\s+[–-]\s+due\b.*$/i, "").trim();
+    $("c-task-title").value = t.title || $("c-task-title").value || subjectTitle;
+    $("c-task-due").value = t.due || $("c-task-due").value || "";
+    $("c-task-high").checked = t.importance === "high" || (!t.title && $("c-task-high").checked);
+  }
+
+  const SMALL = new Set(["a", "an", "the", "and", "or", "of", "for", "to", "in", "on", "at", "by", "with", "from", "as"]);
+
+  /** "stock report for october" -> "Stock Report for October" (only when typed all in lower case). */
+  function tidySubject(subject) {
+    const s = (subject || "").replace(/\s+/g, " ").trim();
+    if (!s || s !== s.toLowerCase() || !/[a-z]/.test(s)) return s;
+    return s.split(" ").map((w, i) => (i && SMALL.has(w) ? w : w.charAt(0).toUpperCase() + w.slice(1))).join(" ");
+  }
+
+  /** "check the generator diesel" -> "Check the Generator Diesel" (words already in capitals are kept). */
+  function titleCase(text) {
+    return (text || "").replace(/\s+/g, " ").trim().split(" ")
+      .map((w, i) => (i && SMALL.has(w.toLowerCase()) ? w.toLowerCase() : w.charAt(0).toUpperCase() + w.slice(1)))
+      .join(" ");
+  }
+
+  /** "2026-11-20" -> "Due Fri 20 Nov" / "Due Today" / "Due Tomorrow". */
+  function dueLabel(iso) {
+    const d = new Date(iso + "T00:00");
+    const days = Math.round((d - localToday()) / 86_400_000);
+    if (days === 0) return "Due Today";
+    if (days === 1) return "Due Tomorrow";
+    const opts = { weekday: "short", day: "numeric", month: "short" };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+    return "Due " + d.toLocaleDateString("en-GB", opts).replace(",", "");
+  }
+
+  async function suggestSubject(text) {
+    if (!text || !text.trim()) return "";
+    try {
+      const r = await api("/api/subject", { method: "POST", body: JSON.stringify({ text }) });
+      return (r && r.subject) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function composeTaskPayload() {
+    if (!compose.taskOn) return null;
+    return {
+      title: $("c-task-title").value.trim(),
+      due: $("c-task-due").value || null,
+      importance: $("c-task-high").checked ? "high" : "normal",
+      people: compose.taskPeople,
+    };
+  }
+
+  /** Before sending a task: "Task:" subject, and Task / Due date / Priority lines in the body if not there yet. */
+  function applyTaskToEmail(task) {
+    let subject = tidySubject($("c-subject").value.trim());
+    const reply = (subject.match(/^(?:(?:re|fw|fwd)\s*:\s*)+/i) || [""])[0];
+    let rest = subject.slice(reply.length).trim();
+    if (!/\btask\b/i.test(rest)) rest = "Task: " + (rest ? tidySubject(rest) : titleCase(task.title));
+    if (task.due && !/\bdue\b/i.test(rest)) rest += " – " + dueLabel(task.due);
+    $("c-subject").value = reply + rest;
+    const body = $("c-body").value;
+    if (/^\s*task\s*:/im.test(body)) return; // Write for me already wrote the task details
+    const lines = [`Task: ${task.title}`];
+    if (task.due) {
+      lines.push("Due date: " + new Date(task.due + "T00:00").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" }));
+    }
+    if (task.importance === "high") lines.push("Priority: High");
+    const block = lines.join("\n");
+    // Put it before the sign-off ("Best regards," ...) if there is one, otherwise at the end.
+    const m = body.match(/\n[ \t]*(?:best regards|kind regards|warm regards|regards|sincerely|thanks (?:and|&) regards|thank you(?: and regards)?|thanks)\b[^\n]*\n?[\s\S]*$/i);
+    $("c-body").value = m
+      ? body.slice(0, m.index).replace(/\s+$/, "") + "\n\n" + block + "\n" + body.slice(m.index)
+      : body.replace(/\s+$/, "") + (body.trim() ? "\n\n" : "") + block;
   }
 
   async function submitCompose(action) {
@@ -2074,14 +2161,31 @@
       setComposeError(`Attachments are too large (${formatSize(totalAttachmentBytes())}). The total must be under 25 MB.`);
       return;
     }
-    if (action === "send" && !$("c-subject").value.trim()) {
-      // Outlook-style nudge rather than a hard block.
+    if (action === "send" && !$("c-subject").value.trim() && !compose.taskOn) {
+      // Outlook-style nudge rather than a hard block, with a subject written from the message.
       if (!compose.subjectWarned) {
         compose.subjectWarned = true;
-        setComposeError("This message has no subject. Click Send again to send it anyway.");
+        const suggested = await suggestSubject($("c-body").value);
+        if (suggested) {
+          $("c-subject").value = suggested;
+          compose.dirty = true;
+          setComposeError(`Subject added: “${suggested}”. Change it if you like, then click Send again.`);
+          $("c-subject").focus();
+        } else {
+          setComposeError("This message has no subject. Click Send again to send it anyway.");
+        }
         return;
       }
     }
+    if (action === "send") $("c-subject").value = tidySubject($("c-subject").value);
+
+    const task = composeTaskPayload();
+    if (task && !task.title) {
+      setComposeError("Write what the task is (the Task box under the subject), or turn off Send as task.");
+      $("c-task-title").focus();
+      return;
+    }
+    if (task && action === "send") applyTaskToEmail(task);
 
     setComposeBusy(true, action === "send" ? "Sending…" : "Saving…");
     try {
@@ -2093,7 +2197,11 @@
       if (f && (f.key === "drafts" || f.key === "sentitems")) loadMessages("refresh");
       loadFolders();
       if (result.status === "sent") {
-        toast("Message sent");
+        if (result.task) {
+          tasksState.tasks.unshift(result.task);
+          renderTasks();
+          toast("Task sent and added to Tasks › Given");
+        } else toast(compose.taskOn ? "Message sent (the task could not be saved)" : "Message sent");
         compose.subjectWarned = false;
         compose.autoDraft = false; // the draft became the sent message
         closeCompose();
@@ -2176,6 +2284,13 @@
     if (e.target.id === "c-subject") compose.subjectWarned = false;
   });
   $("c-draft").addEventListener("click", () => submitCompose("draft"));
+  if ($("c-task-toggle")) {
+    $("c-task-toggle").addEventListener("click", () => {
+      setComposeTask(!compose.taskOn);
+      compose.dirty = true;
+      if (compose.taskOn && !$("c-task-title").value) $("c-task-title").focus();
+    });
+  }
   $("c-discard").addEventListener("click", discardCompose);
   $("compose-close").addEventListener("click", requestClose);
   $("c-show-ccbcc").addEventListener("click", () => {
@@ -2233,6 +2348,10 @@
   setInterval(() => {
     if (started && !document.hidden && !state.loading) refreshAll("refresh");
     if (started && !document.hidden && currentView === "overview") loadOverview();
+    if (started && !document.hidden && currentView === "tasks") {
+      loadSuggestions({ quiet: true });
+      if (!$("tasks-list").contains(document.activeElement)) loadTasks(); // also picks up task emails you sent (Given)
+    }
   }, AUTO_REFRESH_MS);
   document.addEventListener("visibilitychange", () => {
     if (started && !document.hidden && !state.loading) refreshAll("refresh");
@@ -2261,7 +2380,7 @@
   // Views: Mail / Tasks
   // ------------------------------------------------------------------------
 
-  const tasksState = { tasks: [], suggestions: [], suggLoaded: false, suggLoading: false };
+  const tasksState = { tasks: [], suggestions: [], suggLoaded: false, suggLoading: false, tab: "mine" };
 
   function setView(next) {
     $("mail-view").classList.toggle("hidden", next !== "mail");
@@ -2275,7 +2394,7 @@
     closeSidebar();
     if (next === "tasks") {
       loadTasks();
-      if (!tasksState.suggLoaded) loadSuggestions();
+      loadSuggestions({ quiet: true });
     }
     if (next === "overview") loadOverview();
     if (next === "summary") loadSummary();
@@ -2418,8 +2537,8 @@
         if (!input.value.trim()) return input.focus();
         add.disabled = dismiss.disabled = true;
         try {
-          await createTask({ title: input.value.trim(), due: date.value || null, messageId: e.id, suggestionKey: t.key });
-          toast("Task added");
+          await createTask({ title: input.value.trim(), due: date.value || null, messageId: e.id, suggestionKey: t.key, direction: "received", person: personName(e.from), personAddress: ((e.from) || {}).address || "" });
+          toast("Task added to Tasks › My tasks");
           loadSummary();
         } catch (err) {
           add.disabled = dismiss.disabled = false;
@@ -2783,10 +2902,54 @@
     $(id).classList.toggle("hidden", !message);
   }
 
+  const TASK_TABS = {
+    mine: {
+      help: "Everything you need to do: tasks you added yourself, and tasks from emails (marked “From: …”).",
+      empty: "No open tasks. Nice work!",
+    },
+    given: {
+      help: "Tasks you gave to others: every task email you send (from this dashboard, Outlook or your phone) is added here automatically. Tick one off when they report it done.",
+      empty: "No open tasks given to others. Use “Give a task to someone” to assign one by email.",
+    },
+    received: {
+      help: "Tasks other people asked you to do, added from their emails (Add task, or Found in your emails).",
+      empty: "No open received tasks. Add one from an email with “Add task”.",
+    },
+  };
+  const taskDir = (t) => t.direction || (t.messageId ? "received" : "mine");
+  /** My tasks = everything on your plate (your own + received); the other tabs show one kind. */
+  const inTaskTab = (t, tab) => (tab === "mine" ? taskDir(t) !== "given" : taskDir(t) === tab);
+
   function updateTasksBadge() {
-    const open = tasksState.tasks.filter((t) => !t.completed).length;
+    const openTasks = tasksState.tasks.filter((t) => !t.completed);
+    const open = openTasks.filter((t) => taskDir(t) !== "given").length; // the sidebar counts what is on your plate
     $("tasks-badge").textContent = open ? String(open) : "";
-    $("tasks-count").textContent = open ? `(${open} open)` : "";
+    for (const dir of Object.keys(TASK_TABS)) {
+      const n = openTasks.filter((t) => inTaskTab(t, dir)).length;
+      if ($(`ttab-${dir}-count`)) $(`ttab-${dir}-count`).textContent = n ? String(n) : "";
+    }
+    const inTab = openTasks.filter((t) => inTaskTab(t, tasksState.tab)).length;
+    $("tasks-count").textContent = inTab ? `(${inTab} open)` : "";
+  }
+
+  function setTaskTab(dir) {
+    tasksState.tab = TASK_TABS[dir] ? dir : "mine";
+    for (const d of Object.keys(TASK_TABS)) $(`ttab-${d}`).setAttribute("aria-selected", String(d === tasksState.tab));
+    $("tasks-tab-help").textContent = TASK_TABS[tasksState.tab].help;
+    $("task-new").classList.toggle("hidden", tasksState.tab !== "mine");
+    $("task-give").classList.toggle("hidden", tasksState.tab !== "given");
+    renderTasks();
+  }
+
+  /** Give a task: open Write for me in task mode (optionally to someone, e.g. a reminder). */
+  function giveTask(note = "") {
+    openWriter({ mode: "task", note });
+  }
+
+  function remindAbout(t) {
+    const who = (t.person || "").split(",")[0].trim() || "them";
+    const when = t.due ? ` by ${new Date(t.due + "T00:00").toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })}` : "";
+    openWriter({ mode: "email", note: `remind ${who} to ${t.title.charAt(0).toLowerCase() + t.title.slice(1)}${when}` });
   }
 
   function taskRow(t) {
@@ -2803,6 +2966,16 @@
     const due = dueInfo(t.due);
     if (due && !t.completed) meta.append(el("span", due.cls, due.label));
     if (t.importance === "high") meta.append(el("span", "font-semibold text-red-600", "High importance"));
+    const dir = taskDir(t);
+    if (dir === "given" && t.person) meta.append(el("span", "task-person text-slate-600 dark:text-slate-300", "To: " + t.person));
+    if (dir === "received" && t.person) meta.append(el("span", "task-person text-slate-600 dark:text-slate-300", "From: " + t.person));
+    if (dir === "given" && !t.completed) {
+      const remind = el("button", "text-brand-600 hover:underline dark:text-brand-400", "Remind");
+      remind.type = "button";
+      remind.title = "Write a reminder email about this task";
+      remind.addEventListener("click", () => remindAbout(t));
+      meta.append(remind);
+    }
     if (t.messageId) {
       const link = el("button", "text-brand-600 hover:underline dark:text-brand-400", "Open email");
       link.type = "button";
@@ -2816,9 +2989,10 @@
 
   function renderTasks() {
     const list = $("tasks-list");
-    const shown = $("tasks-show-done").checked ? tasksState.tasks : tasksState.tasks.filter((t) => !t.completed);
+    const inTab = tasksState.tasks.filter((t) => inTaskTab(t, tasksState.tab));
+    const shown = $("tasks-show-done").checked ? inTab : inTab.filter((t) => !t.completed);
     if (!shown.length) {
-      list.replaceChildren(el("li", "px-3 py-8 text-center text-sm text-slate-500", "No open tasks. Nice work!"));
+      list.replaceChildren(el("li", "px-3 py-8 text-center text-sm text-slate-500", TASK_TABS[tasksState.tab].empty));
     } else {
       list.replaceChildren(...shown.map(taskRow));
     }
@@ -2849,6 +3023,13 @@
     }
   }
 
+  /** {name, address} -> "Qasim Ali" (or the address when there's no name). */
+  function personName(p) {
+    if (!p) return "";
+    if (typeof p === "string") return p;
+    return (p.name || p.address || "").trim();
+  }
+
   async function createTask(payload) {
     const task = await api("/api/tasks", { method: "POST", body: JSON.stringify(payload) });
     tasksState.tasks.unshift(task);
@@ -2857,12 +3038,19 @@
   }
 
   $("tasks-show-done").addEventListener("change", loadTasks);
+  // Guarded: if the page is older than this script (dashboard not restarted after an update), the rest of
+  // the app must keep working instead of stopping here.
+  if ($("ttab-mine")) {
+    for (const d of Object.keys(TASK_TABS)) $(`ttab-${d}`).addEventListener("click", () => setTaskTab(d));
+    $("task-give").addEventListener("click", () => giveTask());
+    setTaskTab("mine");
+  }
   $("task-new").addEventListener("submit", async (e) => {
     e.preventDefault();
     const title = $("task-new-title").value.trim();
     if (!title) return $("task-new-title").focus();
     try {
-      await createTask({ title, due: $("task-new-due").value || null });
+      await createTask({ title, due: $("task-new-due").value || null, direction: "mine" });
       $("task-new-title").value = "";
       $("task-new-due").value = "";
       toast("Task added");
@@ -2911,9 +3099,9 @@
       if (!title.value.trim()) return title.focus();
       add.disabled = dismiss.disabled = true;
       try {
-        await createTask({ title: title.value.trim(), due: due.value || null, messageId: s.messageId, suggestionKey: s.key });
+        await createTask({ title: title.value.trim(), due: due.value || null, messageId: s.messageId, suggestionKey: s.key, direction: "received", person: personName(s.from), personAddress: ((s.from) || {}).address || "" });
         removeSuggestion(s.key);
-        toast("Task added");
+        toast("Task added to Tasks › My tasks");
       } catch (err) {
         add.disabled = dismiss.disabled = false;
         if (!handleError(err)) toast(err.message, "error");
@@ -2962,24 +3150,42 @@
     list.replaceChildren(...tasksState.suggestions.map(suggestionCard));
   }
 
-  async function loadSuggestions() {
+  /**
+   * Scans recent mail for requests. quiet: a background check (opening Tasks again, or every minute while
+   * Tasks is open) that only adds requests from newly arrived mail and never wipes what you are editing.
+   */
+  async function loadSuggestions(opts = {}) {
+    const quiet = opts.quiet === true && tasksState.suggLoaded;
     if (tasksState.suggLoading) return;
     tasksState.suggLoading = true;
     $("sugg-refresh").disabled = true;
     $("sugg-refresh").textContent = "Scanning…";
-    $("sugg-list").replaceChildren(...[0, 1].map(() => {
-      const li = el("li", "space-y-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800");
-      li.append(el("div", "skeleton h-8 w-full"), el("div", "skeleton h-3 w-2/3"), el("div", "skeleton h-3 w-1/2"));
-      return li;
-    }));
+    if (!quiet) {
+      $("sugg-list").replaceChildren(...[0, 1].map(() => {
+        const li = el("li", "space-y-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800");
+        li.append(el("div", "skeleton h-8 w-full"), el("div", "skeleton h-3 w-2/3"), el("div", "skeleton h-3 w-1/2"));
+        return li;
+      }));
+    }
     try {
       const data = await api(`/api/tasks/suggestions?days=${encodeURIComponent($("sugg-days").value)}`);
-      tasksState.suggestions = data.suggestions;
+      if (quiet) {
+        const known = new Set(tasksState.suggestions.map((x) => x.key));
+        const fresh = data.suggestions.filter((x) => !known.has(x.key));
+        const editing = $("sugg-list").contains(document.activeElement);
+        if (fresh.length && !editing) {
+          tasksState.suggestions = [...fresh, ...tasksState.suggestions];
+          renderSuggestions();
+          toast(fresh.length === 1 ? "1 new possible task found in your email" : `${fresh.length} new possible tasks found in your email`);
+        }
+      } else {
+        tasksState.suggestions = data.suggestions;
+        renderSuggestions();
+      }
       tasksState.suggLoaded = true;
       showBox("sugg-error", null);
-      renderSuggestions();
     } catch (err) {
-      $("sugg-list").replaceChildren();
+      if (!quiet) $("sugg-list").replaceChildren();
       if (!handleError(err)) showBox("sugg-error", err.message);
     } finally {
       tasksState.suggLoading = false;
@@ -2988,8 +3194,8 @@
     }
   }
 
-  $("sugg-refresh").addEventListener("click", loadSuggestions);
-  $("sugg-days").addEventListener("change", loadSuggestions);
+  $("sugg-refresh").addEventListener("click", () => loadSuggestions());
+  $("sugg-days").addEventListener("change", () => loadSuggestions());
 
   // "Add task" from the open email
 
@@ -3046,9 +3252,10 @@
         due: $("r-task-due").value || null,
         messageId: d.id,
         suggestionKey: readingTask.key && title === readingTask.title ? readingTask.key : undefined,
+        direction: "received", person: personName(d.from), personAddress: ((d.from) || {}).address || "",
       });
       hideReadingTask();
-      toast("Task added");
+      toast("Task added to Tasks › My tasks");
     } catch (err) {
       if (!handleError(err)) toast(err.message, "error");
     }
@@ -3070,11 +3277,25 @@
     $("writer-error").classList.toggle("hidden", !message);
   }
 
-  function openWriter() {
+  function setWriterMode(mode) {
+    writer.mode = mode === "task" ? "task" : "email";
+    document.querySelectorAll(".writer-mode-btn").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.mode === writer.mode)));
+    if ($("writer-task")) $("writer-task").classList.toggle("hidden", writer.mode !== "task");
+    $("writer-title").textContent = writer.mode === "task" ? "Give a task" : "Write for me";
+    if (writer.step === 1) $("writer-ok").textContent = writer.mode === "task" ? "Write task email" : "Write email";
+    writer.note = null; // switching mode means writing again
+  }
+
+  function openWriter(opts = {}) {
     if (composeOpen() || writerOpen()) return;
     Object.assign(writer, { busy: false, note: null, rows: [], step: 1 });
     $("writer-people").classList.add("hidden");
-    $("writer-ok").textContent = "Write email";
+    if (opts.note !== undefined) $("writer-note").value = opts.note;
+    if ($("writer-due")) {
+      $("writer-due").value = opts.due || "";
+      $("writer-high").checked = false;
+    }
+    setWriterMode(opts.mode || "email");
     $("writer-ok").disabled = false;
     $("writer-status").textContent = "";
     setWriterError(null);
@@ -3232,12 +3453,15 @@
     closeWriter();
     openCompose({
       mode: "new",
-      title: "New message (written for you)",
+      title: r.task ? "New task (written for you)" : "New message (written for you)",
       to: r.to.map((p) => ({ address: p.address })),
       cc: r.cc.map((p) => ({ address: p.address })),
       subject: r.subject,
       body: r.body,
-      status: r.translated ? `Translated from ${r.languages.join(", ")}: check it, then Send` : "Check it, then Send",
+      task: r.task || null,
+      status: r.task
+        ? "Task email: when you click Send it is added to Tasks › Given"
+        : r.translated ? `Translated from ${r.languages.join(", ")}: check it, then Send` : "Check it, then Send",
     });
   }
 
@@ -3252,6 +3476,9 @@
       const c = writerChoices();
       if (c.error) return setWriterError(c.error);
       payload = { note, choices: c.choices };
+    }
+    if (writer.mode === "task") {
+      payload.task = { due: $("writer-due").value || null, importance: $("writer-high").checked ? "high" : "normal" };
     }
     writer.busy = true;
     $("writer-ok").disabled = true;
@@ -3379,7 +3606,8 @@
     }
   });
 
-  $("write-btn").addEventListener("click", openWriter);
+  $("write-btn").addEventListener("click", () => openWriter());
+  document.querySelectorAll(".writer-mode-btn").forEach((b) => b.addEventListener("click", () => setWriterMode(b.dataset.mode)));
   $("writer-close").addEventListener("click", closeWriter);
   $("writer-cancel").addEventListener("click", closeWriter);
   $("writer-form").addEventListener("submit", (e) => {

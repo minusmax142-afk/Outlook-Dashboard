@@ -183,3 +183,12 @@ div.stat-card:hover { background: var(--surface); }
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }
 @media (hover: none) { .msg-avatar { opacity: 0; } }
+
+/* Write for me: Email / Give a task switch */
+.writer-mode { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); }
+.writer-mode-btn { padding: 0.3rem 0.9rem; border-radius: 7px; font-size: 0.85rem; font-weight: 500; color: var(--muted); transition: all 0.15s var(--ease); }
+.writer-mode-btn:hover { color: var(--brand); }
+.writer-mode-btn[aria-checked="true"] { background: var(--brand); color: #fff; }
+.task-person { display: inline-flex; align-items: center; gap: 0.25rem; }
+#c-task-toggle[aria-pressed="true"] { background: var(--brand); color: #fff; border-radius: 8px; }
+#c-task-row:not(.hidden) { display: flex; }

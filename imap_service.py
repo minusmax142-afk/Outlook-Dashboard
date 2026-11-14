@@ -1347,7 +1347,7 @@ def compose(action, mode="new", source_id=None, draft_id=None, to=None, cc=None,
                 pass
         if draft_id:
             _delete_quietly(draft_id)
-        return {"status": "sent"}
+        return {"status": "sent", "messageIdHeader": str(msg["Message-ID"] or "")}
 
     drafts = _folder_name("drafts")
     resp = c.append(drafts, raw, flags=[imapclient.DRAFT, imapclient.SEEN])
@@ -1406,16 +1406,29 @@ def _for_tasks(message_id: str, data: dict, text: str, me: str) -> dict:
     }
 
 
+# Emails already read for task suggestions, kept in memory only (never on disk): a re-scan then downloads
+# just the emails that arrived since, so the Tasks page can check for new requests every minute.
+_TASK_MSG_CACHE: "OrderedDict[tuple[int, int], dict]" = OrderedDict()
+_TASK_MSG_CACHE_MAX = 300
+
+
 def recent_messages_for_tasks(days: int = 7, limit: int = 40) -> list[dict]:
     validity = _select("INBOX", readonly=True)
     since = date.today() - timedelta(days=days)
     uids = sorted(_imap().search(["SINCE", since]), reverse=True)[:limit]
     if not uids:
         return []
-    fetched = _imap().fetch(uids, ["INTERNALDATE", "BODYSTRUCTURE", HEADER_FIELDS])
-    texts = _fetch_texts(uids, {u: d.get(b"BODYSTRUCTURE") for u, d in fetched.items()}, 20000)
-    me = _my_address()
-    return [_for_tasks(_make_id("INBOX", validity, u), fetched[u], texts.get(u, ""), me) for u in uids if u in fetched]
+    new = [u for u in uids if (validity, u) not in _TASK_MSG_CACHE]
+    if new:
+        fetched = _imap().fetch(new, ["INTERNALDATE", "BODYSTRUCTURE", HEADER_FIELDS])
+        texts = _fetch_texts(new, {u: d.get(b"BODYSTRUCTURE") for u, d in fetched.items()}, 20000)
+        me = _my_address()
+        for u in new:
+            if u in fetched:
+                _TASK_MSG_CACHE[(validity, u)] = _for_tasks(_make_id("INBOX", validity, u), fetched[u], texts.get(u, ""), me)
+        while len(_TASK_MSG_CACHE) > _TASK_MSG_CACHE_MAX:
+            _TASK_MSG_CACHE.popitem(last=False)
+    return [_TASK_MSG_CACHE[(validity, u)] for u in uids if (validity, u) in _TASK_MSG_CACHE]
 
 
 def get_message_for_tasks(message_id: str) -> dict:
@@ -1425,6 +1438,56 @@ def get_message_for_tasks(message_id: str) -> dict:
         raise NotFound("That email no longer exists.")
     text = _fetch_texts([uid], {uid: data.get(b"BODYSTRUCTURE")}, 20000).get(uid, "")
     return _for_tasks(message_id, data, text, _my_address())
+
+
+# Sent emails already read for Given tasks (memory only, like the Inbox cache above).
+_SENT_TASK_CACHE: "OrderedDict[tuple[int, int], dict]" = OrderedDict()
+
+
+def sync_given_tasks(days: int = 30, limit: int = 100) -> int:
+    """Task emails you sent from anywhere (this dashboard, Outlook, your phone) -> Tasks > Given.
+    Reads Sent Items; each sent email is added once (by its Message-ID). Returns how many were added."""
+    import task_finder
+
+    folder = _folder_name("sentitems")
+    validity = _select(folder, readonly=True)
+    since = date.today() - timedelta(days=days)
+    uids = sorted(_imap().search(["SINCE", since]), reverse=True)[:limit]
+    new = [u for u in uids if (validity, u) not in _SENT_TASK_CACHE]
+    if new:
+        fetched = _imap().fetch(new, ["INTERNALDATE", "BODYSTRUCTURE", HEADER_FIELDS])
+        texts = _fetch_texts(new, {u: d.get(b"BODYSTRUCTURE") for u, d in fetched.items()}, 20000)
+        for u in new:
+            if u not in fetched:
+                continue
+            h = _headers(fetched[u])
+            msg = _for_tasks(_make_id(folder, validity, u), fetched[u], texts.get(u, ""), "")
+            msg["toMe"] = True  # read as if addressed to the recipient
+            msg["to"] = [p for p in _people(str(h.get("To") or "")) if p.get("address")]
+            msg["messageIdHeader"] = str(h.get("Message-ID") or "").strip() or f"{folder}:{validity}:{u}"
+
+            _SENT_TASK_CACHE[(validity, u)] = msg
+        while len(_SENT_TASK_CACHE) > 300:
+            _SENT_TASK_CACHE.popitem(last=False)
+    known = tasks_store.source_keys()
+    added = 0
+    for u in uids:
+        msg = _SENT_TASK_CACHE.get((validity, u))
+        if not msg or not msg["to"]:
+            continue
+        for t in task_finder.given_from_sent(msg):
+            key = f"{msg['messageIdHeader']}#{t['n']}"
+            # n=0 also matches a task recorded when it was sent from this dashboard (key = bare Message-ID)
+            if key in known or (t["n"] == 0 and msg["messageIdHeader"] in known):
+                continue
+            tasks_store.create_task(
+                title=t["title"], due=t["due"], importance=t["importance"], notes=msg["subject"][:300],
+                direction="given", person=", ".join(p.get("name") or p["address"].split("@")[0] for p in msg["to"]),
+                person_address=", ".join(p["address"] for p in msg["to"]), source_key=key,
+            )
+            known.add(key)
+            added += 1
+    return added
 
 
 # ---------------------------------------------------------------------------
@@ -1488,9 +1551,11 @@ SIGN_OFF = re.compile(r"\n\s*(?:best regards|kind regards|warm regards|regards|s
                       r"thanks (?:and|&) regards|thank you and regards)\b[\s\S]*$", re.I)
 
 
-def write_email(note: str, choices: dict | None = None, remember: bool = True, polish: bool = False) -> dict:
+def write_email(note: str, choices: dict | None = None, remember: bool = True, polish: bool = False,
+                task: dict | None = None) -> dict:
     """note -> {subject, body, intent, to:[resolved], cc:[resolved], ready}.
-    choices: {"to": [{"phrase", "address"}], "cc": [...]} picked by the user in the dialog."""
+    choices: {"to": [{"phrase", "address"}], "cc": [...]} picked by the user in the dialog.
+    task: {"due": "YYYY-MM-DD" | None, "importance": "normal" | "high"} -> write a task assignment instead."""
     note = (note or "").strip()
     if polish:
         # Polishing typed email text: drop an existing sign-off/signature (a previous polish, or typed by hand).
@@ -1503,7 +1568,9 @@ def write_email(note: str, choices: dict | None = None, remember: bool = True, p
     note, lang = translate.to_english(note)
     book = _contact_book()
     people = book["people"]
-    parsed = writer.parse(note)
+    task_parsed = writer.task_parse(note) if task is not None else None
+    parsed = ({"to": task_parsed["to"], "cc": task_parsed["cc"], "action": task_parsed["title"]}
+              if task_parsed else writer.parse(note))
     if not parsed["action"].strip():
         raise BadRequest("Add what the email should say, not only who it goes to.")
 
@@ -1528,7 +1595,15 @@ def write_email(note: str, choices: dict | None = None, remember: bool = True, p
     names = [writer.greet_name(r["phrase"], r["name"]) for r in to]
     sig = get_signature()
     try:
-        out = writer.write(note, names, sig, parsed=parsed, polish=polish)
+        if task_parsed:
+            due = str(task.get("due") or "") or None
+            if due and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due):
+                raise BadRequest("Invalid due date.")
+            out = writer.task_email(note, names, sig, due=due, importance=str(task.get("importance") or "normal"),
+                                    parsed=task_parsed)
+            out["task"]["people"] = [{"name": n, "address": r["address"]} for n, r in zip(names, to)]
+        else:
+            out = writer.write(note, names, sig, parsed=parsed, polish=polish)
     except ValueError:
         raise BadRequest("Add what the email should say.")
     ready = all(r["address"] for r in to + cc)

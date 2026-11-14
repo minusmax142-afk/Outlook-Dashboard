@@ -32,8 +32,8 @@
     };
   </script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='theme.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=asset_v) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v=asset_v) }}">
 </head>
 <body class="h-full antialiased" data-backend="{{ backend }}">
 
@@ -571,17 +571,24 @@
               </select>
               <button id="sugg-refresh" class="btn-outline h-8" title="Scan emails again">Scan</button>
             </div>
-            <p class="text-xs text-slate-500">Requests and deadlines spotted in recent mail. Edit the title or due date, then add it, or dismiss it.</p>
+            <p class="text-xs text-slate-500">Requests and deadlines spotted in recent mail sent to you directly (emails where you are only in Cc are left out). Edit the title or due date, then add it, or dismiss it.</p>
             <div id="sugg-error" class="hidden rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200" role="alert"></div>
             <ul id="sugg-list" class="space-y-3"></ul>
           </section>
 
-          <!-- My tasks -->
+          <!-- Task list: My tasks / Given / Received -->
           <section aria-labelledby="mytasks-title" class="space-y-3">
             <div class="flex items-center gap-2">
-              <h2 id="mytasks-title" class="flex-1 font-semibold">My tasks <span id="tasks-count" class="text-sm font-normal text-slate-500"></span></h2>
+              <h2 id="mytasks-title" class="flex-1 font-semibold">Task list <span id="tasks-count" class="text-sm font-normal text-slate-500"></span></h2>
               <label class="flex items-center gap-1.5 text-xs text-slate-500"><input id="tasks-show-done" type="checkbox"> Show completed</label>
             </div>
+            <div class="flex gap-1 border-b border-slate-200 dark:border-slate-800" role="tablist" aria-label="Which tasks" style="border-color: var(--border)">
+              <button class="sum-tab" role="tab" id="ttab-mine" data-dir="mine" aria-selected="true" aria-controls="tasks-list">My tasks <span id="ttab-mine-count" class="tab-count"></span></button>
+              <button class="sum-tab" role="tab" id="ttab-given" data-dir="given" aria-selected="false" aria-controls="tasks-list">Given <span id="ttab-given-count" class="tab-count"></span></button>
+              <button class="sum-tab" role="tab" id="ttab-received" data-dir="received" aria-selected="false" aria-controls="tasks-list">Received <span id="ttab-received-count" class="tab-count"></span></button>
+            </div>
+            <p id="tasks-tab-help" class="text-xs text-slate-500"></p>
+            <button type="button" id="task-give" class="btn-outline hidden h-9 w-full">+ Give a task to someone</button>
             <form id="task-new" class="flex flex-wrap gap-2 rounded-lg border border-slate-200 p-2 dark:border-slate-800">
               <input id="task-new-title" class="input h-9 min-w-0 flex-1" placeholder="Add a task…" maxlength="255" aria-label="New task title">
               <input id="task-new-due" type="date" class="input h-9" aria-label="Due date">
@@ -626,6 +633,13 @@
           <span class="compose-label">Subject</span>
           <input id="c-subject" name="subject" class="compose-input" maxlength="255" autocomplete="off">
         </label>
+        <div id="c-task-row" class="hidden flex-wrap items-center gap-2 bg-brand-50/60 px-4 py-2 dark:bg-slate-950/60" aria-label="Task details">
+          <span class="compose-label font-semibold text-brand-700 dark:text-brand-400">Task</span>
+          <input id="c-task-title" class="input h-8 min-w-[12rem] flex-1 text-sm" maxlength="255" placeholder="What should they do?" aria-label="Task title">
+          <label class="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">Due <input id="c-task-due" type="date" class="input h-8 text-sm" aria-label="Task due date"></label>
+          <label class="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300"><input id="c-task-high" type="checkbox"> High priority</label>
+          <span class="w-full text-xs text-slate-500">When you click Send, the task details are added to the email and it is saved in <b>Tasks &rsaquo; Given</b>.</span>
+        </div>
       </div>
 
       <textarea id="c-body" name="body" class="block min-h-[220px] w-full resize-y bg-transparent px-4 py-3 text-sm leading-relaxed outline-none" placeholder="Write your message…" aria-label="Message"></textarea>
@@ -659,6 +673,10 @@
       <button type="button" id="c-polish" class="btn-outline" title="Rewrite what you typed as a formal, professional email">
         <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
         <span id="c-polish-label">Make professional</span>
+      </button>
+      <button type="button" id="c-task-toggle" class="tool-btn" aria-pressed="false" title="Send this email as a task: it is added to Tasks › Given">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        <span>Send as task</span>
       </button>
       <label class="tool-btn cursor-pointer" title="Attach files">
         <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>
@@ -728,9 +746,19 @@
         <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
-    <p class="text-sm text-slate-600 dark:text-slate-300">Write what you want to say in a few words, and who it goes to (<b>send to …</b>, <b>cc …</b>). English, Roman Urdu, Roman Hindi or any other language: it is turned into a polished English email, and you'll see it before anything is sent.</p>
-    <textarea id="writer-note" rows="3" maxlength="2000" class="input block w-full p-3 text-sm leading-relaxed" aria-label="Your note"
-              placeholder="Type in any language, e.g. qasim ko bolo report kal tak bhej de"></textarea>
+    <div class="writer-mode" role="radiogroup" aria-label="What to write">
+      <button type="button" class="writer-mode-btn" role="radio" aria-checked="true" data-mode="email">Email</button>
+      <button type="button" class="writer-mode-btn" role="radio" aria-checked="false" data-mode="task">Give a task</button>
+    </div>
+    <div id="writer-task" class="hidden space-y-2 rounded-lg border border-brand-500/40 bg-brand-50/60 p-3 dark:bg-slate-900">
+      <p class="text-xs text-slate-600 dark:text-slate-300">Write the task and who it is for, e.g. <i>give task to qasim to prepare the stock report by friday</i>. When you send the email, the task is added to <b>Tasks &rsaquo; Given</b>.</p>
+      <div class="flex flex-wrap items-center gap-3 text-sm">
+        <label class="flex items-center gap-2">Due date <input id="writer-due" type="date" class="input h-8 text-sm" aria-label="Due date"></label>
+        <label class="flex items-center gap-1.5"><input id="writer-high" type="checkbox"> High priority</label>
+        <span class="text-xs text-slate-500">No date picked? A date in your note ("by friday") is used.</span>
+      </div>
+    </div>
+    <textarea id="writer-note" rows="3" maxlength="2000" class="input block w-full p-3 text-sm leading-relaxed" aria-label="Your note"></textarea>
     <div class="flex flex-wrap items-center gap-1.5 text-xs" aria-label="Examples">
       <span class="text-slate-500">Try:</span>
       <button type="button" class="writer-example" data-note="hold salary of [name], send to [name]">Hold salary</button>
@@ -781,6 +809,6 @@
   <div id="toast-box" class="pointer-events-auto hidden items-center gap-3 rounded-lg px-4 py-2.5 text-sm shadow-lg"></div>
 </div>
 
-<script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='app.js', v=asset_v) }}"></script>
 </body>
 </html>
